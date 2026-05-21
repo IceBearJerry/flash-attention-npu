@@ -1,4 +1,4 @@
-# FlashAttention for Ascend NPU
+# flash-attention-npu
 
 <div align="center">
   <a href="#"><img src="https://img.shields.io/badge/English-README.md-blue?style=flat-square" alt="English"></a> <a href="README.zh.md"><img src="https://img.shields.io/badge/中文-README.zh.md-green?style=flat-square" alt="中文"></a>
