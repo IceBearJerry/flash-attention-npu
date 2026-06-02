@@ -96,6 +96,7 @@ class BishengBuildExt(build_ext):
             f"-I{torch_npu_include}",
             f"-I{torch_include}",
             f"-I{ascend_home}/include",
+            f"-I{ascend_home}/pkg_inc",
             f"-I{ascend_home}/runtime/include",
             f"-I{ascend_home}/include/experiment/runtime",
             f"-I{ascend_home}/include/experiment/msprof",
