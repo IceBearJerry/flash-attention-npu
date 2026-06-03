@@ -86,7 +86,7 @@ class BishengBuildExt(build_ext):
             "-O2",
             "-x", "asc",
             "--npu-arch=dav-2201",
-            "--cce-auto-infer-kernel-type=false" if parse(torch_npu.utils.get_cann_version()) >= parse("9.0.0") else "",
+            *(["--cce-auto-infer-kernel-type=false"] if parse(torch_npu.utils.get_cann_version()) >= parse("9.0.0") else []),
             "-shared",
             "-fPIC",
             "-std=c++17",
