@@ -18,6 +18,7 @@
 #include "catlass/gemm/block/block_mmad.hpp"
 #include "pv_matmul.hpp"
 #include "qk_matmul.hpp"
+#include "CombineScale.hpp"
 #include "catlass/gemm/dispatch_policy.hpp"
 #include "fa_block.h"
 #include "catlass/gemm/gemm_type.hpp"
@@ -37,7 +38,9 @@ namespace SplitFuse {
         class EpilogueRescaleO,
         bool PAGED_CACHE_FLAG,
         FaiKenel::MaskType MASK_TYPE = FaiKenel::MaskType::NO_MASK,
-        FaiKenel::inputLayout INPUT_LAYOUT = FaiKenel::inputLayout::BSND>
+        FaiKenel::inputLayout INPUT_LAYOUT = FaiKenel::inputLayout::BSND,
+        class CombineScale = void,
+        bool IS_FD = false>
     class FAInferKernel {
     public:
         using ArchTag = typename BlockMmadQK::ArchTag;
@@ -71,6 +74,24 @@ namespace SplitFuse {
 
         static constexpr Epilogue::LseModeT LSE_MODE = EpilogueRescaleO::LSE_MODE;
 
+        struct GlobalTensorBundle {
+            AscendC::GlobalTensor<ElementQ>& gQ;
+            AscendC::GlobalTensor<ElementK>& gK;
+            AscendC::GlobalTensor<ElementK>& gV;
+            AscendC::GlobalTensor<ElementMask>& gMask;
+            AscendC::GlobalTensor<int32_t>& gBlockTable;
+            AscendC::GlobalTensor<int32_t>& gActualQseqlen;
+            AscendC::GlobalTensor<int32_t>& gActualKvseqlen;
+            AscendC::GlobalTensor<ElementO>& gO;
+            AscendC::GlobalTensor<ElementLse>& gLse;
+            AscendC::GlobalTensor<ElementLse>& gLseFD;
+            AscendC::GlobalTensor<ElementLse>& gOFD;
+            AscendC::GlobalTensor<ElementS>& gS;
+            AscendC::GlobalTensor<ElementP>& gP;
+            AscendC::GlobalTensor<ElementOTmp>& gOTmp;
+            AscendC::GlobalTensor<ElementOTmp>& gOUpdate;
+        };
+
         __aicore__ inline
         FAInferKernel() {}
 
@@ -78,21 +99,31 @@ namespace SplitFuse {
         void operator()(FAIKernelParams const &params)
         {
             __gm__ FAInferTilingData *fATilingData = reinterpret_cast<__gm__ FAInferTilingData *>(params.tiling);
-            uint64_t mm1OutSize = fATilingData->mm1OutSize;
-            uint64_t smOnlineOutSize = fATilingData->smOnlineOutSize;
-            uint64_t mm2OutSize = fATilingData->mm2OutSize;
-            uint32_t batch = fATilingData->batch;
-            uint32_t qHeads = fATilingData->numHeads;
-            uint32_t kvHeads = fATilingData->kvHeads;
-            uint32_t embed = fATilingData->embeddingSize;
-            uint32_t embedV = fATilingData->embeddingSizeV;
-            uint32_t pagedBlockSize = fATilingData->blockSize;
-            uint32_t maxNumBlocksPerBatch = fATilingData->maxNumBlocksPerBatch;
-            uint32_t firstBatchTaskNum = fATilingData->firstBatchTaskNum;
-            uint32_t totalTaskNum = fATilingData->totalTaskNum;
-            uint32_t blockSize = fATilingData->blockSize;
-            uint32_t maskType = fATilingData->maskType;
-            float scaleValue = fATilingData->scaleValue;
+            mm1OutSize = fATilingData->mm1OutSize;
+            smOnlineOutSize = fATilingData->smOnlineOutSize;
+            mm2OutSize = fATilingData->mm2OutSize;
+            batch = fATilingData->batch;
+            qHeads = fATilingData->numHeads;
+            kvHeads = fATilingData->kvHeads;
+            embed = fATilingData->embeddingSize;
+            embedV = fATilingData->embeddingSizeV;
+            pagedBlockSize = fATilingData->blockSize;
+            maxNumBlocksPerBatch = fATilingData->maxNumBlocksPerBatch;
+            firstBatchTaskNum = fATilingData->firstBatchTaskNum;
+            totalTaskNum = fATilingData->totalTaskNum;
+            blockSize = fATilingData->blockSize;
+            maskType = fATilingData->maskType;
+            scaleValue = fATilingData->scaleValue;
+            maxQSeqlen = fATilingData->maxQSeqlen;
+
+            // FD workspace sizing: reserve head of workspace for gLseFD/gOFD.
+            uint64_t Lsesize = 0;
+            uint64_t Losize = 0;
+            if constexpr (IS_FD) {
+                Lsesize = fATilingData->splitLseTotalSize;
+                Losize = fATilingData->splitOTotalSize;
+            }
+
             AscendC::GlobalTensor<ElementQ> gQ;
             gQ.SetGlobalBuffer((__gm__ ElementQ *)params.q);
             AscendC::GlobalTensor<ElementK> gK;
@@ -111,15 +142,31 @@ namespace SplitFuse {
             gO.SetGlobalBuffer((__gm__ ElementO *)params.o);
             AscendC::GlobalTensor<ElementLse> gLse;
             gLse.SetGlobalBuffer((__gm__ ElementLse *)params.lse);
+
+            AscendC::GlobalTensor<ElementLse> gLseFD;
+            AscendC::GlobalTensor<ElementLse> gOFD;
+            if constexpr (IS_FD) {
+                gLseFD.SetGlobalBuffer((__gm__ ElementLse *)(params.workSpace));
+                gOFD.SetGlobalBuffer((__gm__ ElementLse *)(params.workSpace + Lsesize));
+            }
+
             AscendC::GlobalTensor<ElementS> gS;
-            gS.SetGlobalBuffer((__gm__ ElementS *)(params.workSpace));
+            gS.SetGlobalBuffer((__gm__ ElementS *)(params.workSpace + Lsesize + Losize));
             AscendC::GlobalTensor<ElementP> gP;
-            gP.SetGlobalBuffer((__gm__ ElementP *)(params.workSpace + mm1OutSize));
+            gP.SetGlobalBuffer((__gm__ ElementP *)(params.workSpace + Lsesize + Losize + mm1OutSize));
             AscendC::GlobalTensor<ElementOTmp> gOTmp;
-            gOTmp.SetGlobalBuffer((__gm__ ElementOTmp *)(params.workSpace + mm1OutSize + smOnlineOutSize));
+            gOTmp.SetGlobalBuffer((__gm__ ElementOTmp *)(params.workSpace + Lsesize + Losize +
+                mm1OutSize + smOnlineOutSize));
             AscendC::GlobalTensor<ElementOTmp> gOUpdate;
-            gOUpdate.SetGlobalBuffer((__gm__ ElementOTmp *)(params.workSpace +
+            gOUpdate.SetGlobalBuffer((__gm__ ElementOTmp *)(params.workSpace + Lsesize + Losize +
                 mm1OutSize + smOnlineOutSize + mm2OutSize));
+
+            GlobalTensorBundle globalTensors{
+                gQ, gK, gV, gMask, gBlockTable,
+                gActualQseqlen, gActualKvseqlen,
+                gO, gLse, gLseFD, gOFD,
+                gS, gP, gOTmp, gOUpdate
+            };
 
             uint32_t coreIdx = AscendC::GetBlockIdx();
             uint32_t coreNum = AscendC::GetBlockNum();
@@ -142,7 +189,7 @@ namespace SplitFuse {
             AscendC::SetFlag<AscendC::HardEvent::MTE1_MTE2>(EVENT_ID5);
             AscendC::SetFlag<AscendC::HardEvent::MTE1_MTE2>(EVENT_ID6);
             AscendC::SetFlag<AscendC::HardEvent::MTE1_MTE2>(EVENT_ID7);
-            
+
             uint32_t kDynNum = RoundUp(embed, NUM_128);
             kDynNum = kDynNum < NUM_256 ? NUM_256 : kDynNum;
             uint32_t maxQKPL1Size = L1_MAX_SIZE - embedV * MAX_KV_STACK_LEN * sizeof(ElementV);
@@ -154,9 +201,9 @@ namespace SplitFuse {
             nDynNum = L1_MAX_N_NUM % nDynNum != 0 ? RoundDown((nDynNum - 1), NUM_32) : nDynNum;
 
             uint32_t L1_QK_SIZE = BlockMmadQK::L1TileShape::M * kDynNum * sizeof(ElementQ);
-            BlockMmadQK blockMmadQK(resource, nDynNum, kDynNum, MAX_KV_STACK_LEN);
+            blockMmadQK.init(resource, nDynNum, kDynNum, MAX_KV_STACK_LEN);
             uint32_t kPVDynNum = nDynNum * kDynNum / BlockMmadPV::L1TileShape::M;
-            BlockMmadPV blockMmadPV(resource, nDynNum, kPVDynNum, MAX_KV_STACK_LEN, L1_QK_SIZE);
+            blockMmadPV.init(resource, nDynNum, kPVDynNum, MAX_KV_STACK_LEN, L1_QK_SIZE);
 #endif
 #ifdef __DAV_C220_VEC__
             AscendC::SetFlag<AscendC::HardEvent::MTE3_V>(EVENT_ID0);
@@ -175,315 +222,146 @@ namespace SplitFuse {
             AscendC::SetFlag<AscendC::HardEvent::V_MTE2>(EVENT_ID2);
             AscendC::SetFlag<AscendC::HardEvent::V_MTE2>(EVENT_ID3);
 
-            EpilogueOnlineSoftmax epilogueOnlineSoftmax(resource, scaleValue);
-            EpilogueRescaleO epilogueRescaleO(resource);
+            epilogueOnlineSoftmax.init(resource, scaleValue);
+            epilogueRescaleO.init(resource);
 
             coreIdx = AscendC::GetBlockIdx() / AscendC::GetSubBlockNum();
 #endif
-            uint64_t strideQ = static_cast<uint64_t>(qHeads * embed);
-            uint64_t strideO = static_cast<uint64_t>(qHeads * embedV);
-            uint64_t strideK = static_cast<uint64_t>(kvHeads * embed);
-            uint64_t strideV = static_cast<uint64_t>(kvHeads * embedV);
-            uint32_t embedRound = RoundUp(embed, FaiKenel::BLOCK_SIZE);
-            uint32_t embedRoundV = RoundUp(embedV, FaiKenel::BLOCK_SIZE);
-            uint32_t groupSize = qHeads / kvHeads;
+            strideQ = static_cast<uint64_t>(qHeads * embed);
+            strideO = static_cast<uint64_t>(qHeads * embedV);
+            strideK = static_cast<uint64_t>(kvHeads * embed);
+            strideV = static_cast<uint64_t>(kvHeads * embedV);
+            embedRound = RoundUp(embed, FaiKenel::BLOCK_SIZE);
+            embedRoundV = RoundUp(embedV, FaiKenel::BLOCK_SIZE);
+            groupSize = qHeads / kvHeads;
 
-            uint64_t qBOffset = 0;
-            uint64_t kBOffset = 0;
-            uint64_t vBOffset = 0;
-            uint64_t oBOffset = 0;
-            uint64_t lseBOffset = 0;
-            uint64_t blockBOffset = 0;
-
-            uint32_t preTotalTaskNum = 0;
-            uint32_t curBatch = 0;
-            uint32_t totalQTokens = 0;
-            uint32_t qSeqlen = fATilingData->maxQSeqlen;
-            uint32_t kvSeqlen = static_cast<uint32_t>(gActualKvseqlen.GetValue(curBatch));
-            if constexpr(INPUT_LAYOUT == FaiKenel::inputLayout::TND) {
+            totalQTokens = 0;
+            if constexpr (INPUT_LAYOUT == FaiKenel::inputLayout::TND) {
                 totalQTokens = static_cast<uint32_t>(gActualQseqlen.GetValue(batch));
-                uint32_t prevQSeqlenSum = static_cast<uint32_t>(gActualQseqlen.GetValue(curBatch));
-                qSeqlen = static_cast<uint32_t>(gActualQseqlen.GetValue(curBatch + 1)) - prevQSeqlenSum;
-                if constexpr (!PAGED_CACHE_FLAG) {
-                    uint32_t prevKvSeqlenSum = static_cast<uint32_t>(gActualKvseqlen.GetValue(curBatch));
-                    kvSeqlen = static_cast<uint32_t>(gActualKvseqlen.GetValue(curBatch + 1)) - prevKvSeqlenSum;
-                }
             }
-            uint32_t curQNBlockTile = GetQNBlockTile(qSeqlen, groupSize);
-            uint32_t qNBlockNumPerGroup = CeilDiv(groupSize, curQNBlockTile);
-            uint32_t curQNBlockNum = qNBlockNumPerGroup * kvHeads;
-            uint32_t curQSBlockTile = GetQSBlockTile(kvSeqlen);
-            uint32_t curQSBlockNum = CeilDiv(qSeqlen, curQSBlockTile);
-            uint32_t curTotalTaskNum = firstBatchTaskNum;
-            // Go through each task.
-            for (uint32_t taskIdx = coreIdx; taskIdx < totalTaskNum; taskIdx += uint32_t(coreNum)) {
-                // Get the offset of each core on the GM.
-                while (taskIdx >= curTotalTaskNum) {
-                    ++curBatch;
-                    preTotalTaskNum = curTotalTaskNum;
-                    qBOffset += qSeqlen * strideQ;
-                    if constexpr (!PAGED_CACHE_FLAG) {
-                        kBOffset += static_cast<uint64_t>(kvSeqlen * strideK);
-                        vBOffset += static_cast<uint64_t>(kvSeqlen * strideV);
-                    } else {
-                        blockBOffset += static_cast<uint64_t>(maxNumBlocksPerBatch);
-                    }
-                    oBOffset += static_cast<uint64_t>(qSeqlen * strideO);
-                    lseBOffset += static_cast<uint64_t>(qSeqlen * qHeads);
 
-                    qSeqlen = fATilingData->maxQSeqlen;
-                    kvSeqlen = static_cast<uint32_t>(gActualKvseqlen.GetValue(curBatch));
-                    if constexpr(INPUT_LAYOUT == FaiKenel::inputLayout::TND) {
-                        uint32_t prevQSeqlenSum = static_cast<uint32_t>(gActualQseqlen.GetValue(curBatch));
-                        qSeqlen = static_cast<uint32_t>(gActualQseqlen.GetValue(curBatch + 1)) - prevQSeqlenSum;
+            if constexpr (IS_FD) {
+                uint32_t startBIdx = fATilingData->coreInfo[coreIdx].startBIdx;
+                uint32_t startN1Idx = fATilingData->coreInfo[coreIdx].startN1Idx;
+                uint32_t startS1Idx = fATilingData->coreInfo[coreIdx].startS1Idx;
+                uint32_t startS2Idx = fATilingData->coreInfo[coreIdx].startS2Idx;
+                uint32_t endBIdx = fATilingData->coreInfo[coreIdx].endBIdx;
+                uint32_t endN1Idx = fATilingData->coreInfo[coreIdx].endN1Idx;
+                uint32_t endS1Idx = fATilingData->coreInfo[coreIdx].endS1Idx;
+                uint32_t endS2Idx = fATilingData->coreInfo[coreIdx].endS2Idx;
+                uint64_t gmOffsetLseFD = fATilingData->coreInfo[coreIdx].firstSplitKVTaskLseOffset;
+                uint64_t gmOffsetOFD = fATilingData->coreInfo[coreIdx].firstSplitKVTaskOOffset;
+
+                for (uint32_t BIdx = startBIdx; BIdx <= endBIdx; BIdx++) {
+                    uint32_t qSeqlenCur = fATilingData->maxQSeqlen;
+                    uint32_t kvSeqlenCur = static_cast<uint32_t>(gActualKvseqlen.GetValue(BIdx));
+                    if constexpr (INPUT_LAYOUT == FaiKenel::inputLayout::TND) {
+                        uint32_t prevQSeqlenSum = static_cast<uint32_t>(gActualQseqlen.GetValue(BIdx));
+                        qSeqlenCur = static_cast<uint32_t>(gActualQseqlen.GetValue(BIdx + 1)) - prevQSeqlenSum;
                         if constexpr (!PAGED_CACHE_FLAG) {
-                            uint32_t prevKvSeqlenSum = static_cast<uint32_t>(gActualKvseqlen.GetValue(curBatch));
-                            kvSeqlen = static_cast<uint32_t>(gActualKvseqlen.GetValue(curBatch + 1)) - prevKvSeqlenSum;
+                            uint32_t prevKvSeqlenSum = static_cast<uint32_t>(gActualKvseqlen.GetValue(BIdx));
+                            kvSeqlenCur = static_cast<uint32_t>(gActualKvseqlen.GetValue(BIdx + 1)) - prevKvSeqlenSum;
                         }
                     }
-                    curQNBlockTile = GetQNBlockTile(qSeqlen, groupSize);
-                    qNBlockNumPerGroup = CeilDiv(groupSize, curQNBlockTile);
-                    curQNBlockNum = qNBlockNumPerGroup * kvHeads;
-                    curQSBlockTile = GetQSBlockTile(kvSeqlen);
-                    curQSBlockNum = CeilDiv(qSeqlen, curQSBlockTile);
-                    curTotalTaskNum += curQNBlockNum * curQSBlockNum;
-                }
-                uint32_t taskIdxCurBatch = taskIdx - preTotalTaskNum;
-                uint32_t qSBlockIdx = taskIdxCurBatch / curQNBlockNum;
-                uint32_t qNBlockIdx = taskIdxCurBatch - qSBlockIdx * curQNBlockNum;
-                uint32_t qNBlockIdxCurGroup = qNBlockIdx % qNBlockNumPerGroup;
 
-                uint32_t kvNIdx = qNBlockIdx / qNBlockNumPerGroup;
-                uint32_t qNStartIdx = kvNIdx * groupSize + qNBlockIdxCurGroup * curQNBlockTile;
-                uint32_t lseTokenOffset = qSBlockIdx * curQSBlockTile * qHeads;
+                    uint32_t curQNBlockTileTmp = GetQNBlockTile(qSeqlenCur, groupSize);
+                    uint32_t qNBlockNumPerGroupTmp = CeilDiv(groupSize, curQNBlockTileTmp);
+                    uint32_t curQNBlockNumTmp = qNBlockNumPerGroupTmp * kvHeads;
+                    uint32_t curQSBlockTileTmp = GetQSBlockTile(kvSeqlenCur);
+                    uint32_t curQSBlockNumTmp = CeilDiv(qSeqlenCur, curQSBlockTileTmp);
+                    uint32_t curKSBlockNumTmp = CeilDiv(kvSeqlenCur, MAX_KV_STACK_LEN);
 
-                uint64_t gmOffsetQ = qBOffset +
-                    static_cast<uint64_t>(qSBlockIdx * curQSBlockTile) * strideQ +
-                    static_cast<uint64_t>(qNStartIdx * embed);
-                uint64_t gmOffsetK = kBOffset + static_cast<uint64_t>(kvNIdx * embed);
-                uint64_t gmOffsetV = vBOffset + static_cast<uint64_t>(kvNIdx * embedV);
-                uint64_t gmOffsetO = oBOffset +
-                    static_cast<uint64_t>(qSBlockIdx * curQSBlockTile) * strideO +
-                    static_cast<uint64_t>(qNStartIdx * embedV);
-                uint64_t gmOffsetLse = lseBOffset +
-                    static_cast<uint64_t>(lseTokenOffset + qNStartIdx);
+                    int32_t stN1IdxNow = (BIdx == startBIdx) ? (int32_t)startN1Idx : 0;
+                    int32_t enN1IdxNow = (BIdx == endBIdx) ? (int32_t)endN1Idx : (int32_t)curQNBlockNumTmp - 1;
 
-                uint32_t qSBlockSize = (qSBlockIdx == (curQSBlockNum - 1U)) ?
-                    (qSeqlen - qSBlockIdx * curQSBlockTile) : curQSBlockTile;
-                uint32_t qNBlockSize = (qNBlockIdxCurGroup == (qNBlockNumPerGroup - 1U)) ?
-                    (groupSize - qNBlockIdxCurGroup * curQNBlockTile) : curQNBlockTile;
-                uint32_t rowNum = qSBlockSize * qNBlockSize;
-                uint32_t rowNumRound = RoundUp(rowNum, FaiKenel::BLOCK_SIZE);
+                    for (int32_t n1Idx = stN1IdxNow; n1Idx <= enN1IdxNow; n1Idx++) {
+                        int32_t stS1IdxNow = (BIdx == startBIdx && n1Idx == stN1IdxNow) ?
+                            (int32_t)startS1Idx : 0;
+                        int32_t enS1IdxNow = (BIdx == endBIdx && n1Idx == enN1IdxNow) ?
+                            (int32_t)endS1Idx : (int32_t)curQSBlockNumTmp - 1;
 
-                uint32_t noSkipKvS = kvSeqlen;
-                if (maskType != 0U) {
-                    uint32_t diffS = kvSeqlen - qSeqlen;
-                    noSkipKvS = (qSBlockIdx + 1U) * curQSBlockTile + diffS;
-                    noSkipKvS = AscendC::Std::min((uint32_t)kvSeqlen, noSkipKvS);
-                }
-                uint32_t kvSLoopNumTotal = CeilDiv(noSkipKvS, MAX_KV_STACK_LEN);
- 	 
-                uint32_t blockStackNum = (MAX_KV_STACK_LEN - 1 + pagedBlockSize) / pagedBlockSize;
-                uint32_t stackSeqTile = MAX_KV_STACK_LEN;
-                uint32_t stackSeqTilePad = MAX_KV_STACK_LEN;
-                uint32_t preKVNum = PRE_LAUNCH;
-                int32_t stackSeqCount = 0;
+                        for (int32_t s1Idx = stS1IdxNow; s1Idx <= enS1IdxNow; s1Idx++) {
+                            int32_t stS2IdxNow = (BIdx == startBIdx && n1Idx == stN1IdxNow && s1Idx == stS1IdxNow) ?
+                                (int32_t)startS2Idx : 0;
+                            int32_t enS2IdxNow = (BIdx == endBIdx && n1Idx == enN1IdxNow && s1Idx == enS1IdxNow) ?
+                                (int32_t)endS2Idx : (int32_t)curKSBlockNumTmp;
+                            bool isSplitKV = (enS2IdxNow - stS2IdxNow) > 0 &&
+                                (enS2IdxNow - stS2IdxNow) < static_cast<int32_t>(curKSBlockNumTmp);
 
-#ifdef __DAV_C220_CUBE__
-                LayoutQ layoutQTemp(rowNum, embed);
-                LayoutK layoutKTemp(strideK, stackSeqTile);
-                LayoutV layoutVTemp(stackSeqTile, strideV);
-                blockMmadQK.resetBlockStart();
-                blockMmadPV.resetBlockStart();
-                blockMmadQK.loadQGM(gQ[gmOffsetQ], layoutQTemp, rowNum, qNBlockSize, qHeads);
-#endif
-                for (uint32_t kvSIdx = 0; kvSIdx < kvSLoopNumTotal + preKVNum; kvSIdx ++) {
-                    if (kvSIdx < kvSLoopNumTotal) {
-                        if (kvSIdx + 1 > kvSLoopNumTotal - 1U) {
-                            stackSeqTile = noSkipKvS - kvSIdx * MAX_KV_STACK_LEN;
-                        } else {
-                            stackSeqTile = MAX_KV_STACK_LEN;
-                        }
-                        uint32_t curStackTileMod = stackSeqCount % (PRE_LAUNCH + 1U);
-                        uint64_t gmOffsetS =
-                            static_cast<uint64_t>(coreIdx * WORKSPACE_BLOCK_SIZE_DB * (PRE_LAUNCH + 1U) +
-                            curStackTileMod * WORKSPACE_BLOCK_SIZE_DB);
-                        GemmCoord actualBlockShapeQK{rowNum, stackSeqTile, embed};
-                        LayoutS layOutS(rowNum, stackSeqTile, stackSeqTilePad);
-#ifdef __DAV_C220_CUBE__
-                        if constexpr (PAGED_CACHE_FLAG) {
-                            blockMmadQK(
-                                gQ[gmOffsetQ],
-                                gK[gmOffsetK],
-                                gS[gmOffsetS],
-                                gBlockTable[blockBOffset],
-                                layoutQTemp,
-                                layoutKTemp,
-                                layOutS,
-                                actualBlockShapeQK,
-                                kvSIdx,
-                                kvSLoopNumTotal,
-                                pagedBlockSize,
-                                strideK);
-                        } else {
-                            blockMmadQK(
-                                gQ[gmOffsetQ],
-                                gK[gmOffsetK],
-                                gS[gmOffsetS],
-                                gBlockTable,
-                                layoutQTemp,
-                                layoutKTemp,
-                                layOutS,
-                                actualBlockShapeQK,
-                                kvSIdx,
-                                kvSLoopNumTotal,
-                                pagedBlockSize,
-                                strideK);
-                        }
-                        Arch::CrossCoreSetFlag<0x2, PIPE_FIX>(qkReady);
-#endif
-#ifdef __DAV_C220_VEC__
-                        LayoutP layOutP(rowNum, stackSeqTile, stackSeqTilePad);
-                        LayoutMask layOutMask(COMP_TRIU_MASK_DIM_LEN, COMP_TRIU_MASK_DIM_LEN);
-                        uint64_t gmOffsetP = gmOffsetS;
-                        uint32_t triUp = noSkipKvS - qSBlockSize;
-                        uint32_t triDown = noSkipKvS;
-                        uint32_t kvSStartIdx = kvSIdx * MAX_KV_STACK_LEN;
-                        uint32_t kvSEndIdx = kvSStartIdx + stackSeqTile;
-                        bool doTriUMask = triUp < kvSEndIdx - 1;
-                        if constexpr (MASK_TYPE == FaiKenel::MaskType::MASK_CAUSAL) {
-                            if (doTriUMask) {
-                                epilogueOnlineSoftmax(
-                                    gP[gmOffsetP],
-                                    gS[gmOffsetS],
-                                    gMask,
-                                    layOutP,
-                                    layOutS,
-                                    layOutMask,
-                                    actualBlockShapeQK,
-                                    (stackSeqCount == 0),
-                                    qSBlockSize,
-                                    qNBlockSize,
-                                    curStackTileMod,
-                                    qkReady,
-                                    triUp,
-                                    triDown,
-                                    kvSStartIdx,
-                                    kvSEndIdx);
-                            } else {
-                                uint32_t noMaskStackSeqNum = (triUp + 1) / MAX_KV_STACK_LEN;
-                                Arch::CrossCoreWaitFlag(qkReady);
-                                epilogueOnlineSoftmax(
-                                    gP[gmOffsetP],
-                                    gS[gmOffsetS],
-                                    layOutP,
-                                    layOutS,
-                                    actualBlockShapeQK,
-                                    (stackSeqCount == 0),
-                                    (stackSeqCount == noMaskStackSeqNum - 1),
-                                    qSBlockSize,
-                                    qNBlockSize,
-                                    curStackTileMod);
+                            runMainLoop(
+                                coreIdx, BIdx, (uint32_t)n1Idx, (uint32_t)s1Idx,
+                                isSplitKV, stS2IdxNow, enS2IdxNow,
+                                gmOffsetLseFD, gmOffsetOFD,
+                                globalTensors
+                            );
+
+                            if (isSplitKV) {
+                                uint32_t qSBlockSizeTmp = (s1Idx == static_cast<int32_t>(curQSBlockNumTmp - 1U)) ?
+                                    (qSeqlenCur - s1Idx * curQSBlockTileTmp) : curQSBlockTileTmp;
+                                uint32_t qNBlockIdxCurGroupTmp = n1Idx % qNBlockNumPerGroupTmp;
+                                uint32_t qNBlockSizeTmp = (qNBlockIdxCurGroupTmp == (qNBlockNumPerGroupTmp - 1U)) ?
+                                    (groupSize - qNBlockIdxCurGroupTmp * curQNBlockTileTmp) : curQNBlockTileTmp;
+                                gmOffsetLseFD += qSBlockSizeTmp * qNBlockSizeTmp;
+                                gmOffsetOFD += qSBlockSizeTmp * qNBlockSizeTmp * embedV;
                             }
-                        } else {
-                            Arch::CrossCoreWaitFlag(qkReady);
-                            epilogueOnlineSoftmax(
-                                gP[gmOffsetP],
-                                gS[gmOffsetS],
-                                layOutP,
-                                layOutS,
-                                actualBlockShapeQK,
-                                (stackSeqCount == 0),
-                                0,
-                                qSBlockSize,
-                                qNBlockSize,
-                                curStackTileMod);
                         }
-                        Arch::CrossCoreSetFlag<0x2, PIPE_MTE3>(softmaxReady);
-#endif
                     }
-                    if (kvSIdx >= preKVNum) {
-                        uint32_t nowkvSIdx = kvSIdx - preKVNum;
-                        if (nowkvSIdx + 1 > kvSLoopNumTotal - 1U) {
-                            stackSeqTile = noSkipKvS - nowkvSIdx * MAX_KV_STACK_LEN;
-                        } 
-                        else {
-                            stackSeqTile = MAX_KV_STACK_LEN;
-                        }
-                        uint32_t curStackTileMod = (stackSeqCount - PRE_LAUNCH) % (PRE_LAUNCH + 1U);
-                        uint64_t gmOffsetOTmp =
-                            static_cast<uint64_t>(coreIdx * WORKSPACE_BLOCK_SIZE_DB * (PRE_LAUNCH + 1U) +
-                            curStackTileMod * WORKSPACE_BLOCK_SIZE_DB);
-                        GemmCoord actualBlockShapePV{rowNum, embedV, stackSeqTile};
-                        LayoutOTmp layoutOTmp(rowNum, embedV, embedRoundV);
-#ifdef __DAV_C220_CUBE__
-                        LayoutP layoutPTemp(rowNum, stackSeqTile, stackSeqTilePad);
-                        uint64_t gmOffsetP = coreIdx * WORKSPACE_BLOCK_SIZE_DB * (PRE_LAUNCH + 1) +
-                            curStackTileMod * WORKSPACE_BLOCK_SIZE_DB;;
-                        if constexpr (PAGED_CACHE_FLAG) {
-                            blockMmadPV(
-                                gP[gmOffsetP],
-                                gV[gmOffsetV],
-                                gOTmp[gmOffsetOTmp],
-                                gBlockTable[blockBOffset],
-                                layoutPTemp,
-                                layoutVTemp,
-                                layoutOTmp,
-                                actualBlockShapePV,
-                                nowkvSIdx,
-                                kvSLoopNumTotal,
-                                pagedBlockSize,
-                                noSkipKvS,
-                                strideV,
-                                blockStackNum,
-                                softmaxReady);
-                        } else {
-                            blockMmadPV(
-                                gP[gmOffsetP],
-                                gV[gmOffsetV],
-                                gOTmp[gmOffsetOTmp],
-                                gBlockTable,
-                                layoutPTemp,
-                                layoutVTemp,
-                                layoutOTmp,
-                                actualBlockShapePV,
-                                nowkvSIdx,
-                                kvSLoopNumTotal,
-                                pagedBlockSize,
-                                noSkipKvS,
-                                strideV,
-                                blockStackNum,
-                                softmaxReady);
-                        }
-                        Arch::CrossCoreSetFlag<0x2, PIPE_FIX>(pvReady);
-#endif
-#ifdef __DAV_C220_VEC__
-                        LayoutO layoutO(qSeqlen, embed * qHeads);
-                        LayoutUpdate layoutUpdate(rowNum, embed, embedRound);
-                        LayoutLse layoutLse(totalQTokens, qHeads);
-                        uint64_t gmOffsetUpdate = (uint64_t)(coreIdx * WORKSPACE_BLOCK_SIZE_DB);
+                }
+            } else {
+                for (uint32_t taskIdx = coreIdx; taskIdx < totalTaskNum; taskIdx += uint32_t(coreNum)) {
+                    uint32_t curBatchTmp = 0;
+                    uint32_t preTotalTaskNumTmp = 0;
+                    uint32_t curTotalTaskNumTmp = firstBatchTaskNum;
 
-                        Arch::CrossCoreWaitFlag(pvReady);
-                        epilogueRescaleO(
-                            gO[gmOffsetO],
-                            gOTmp[gmOffsetOTmp],
-                            gOUpdate[gmOffsetUpdate],
-                            gLse[gmOffsetLse],
-                            layoutO,
-                            layoutOTmp,
-                            layoutUpdate,
-                            layoutLse,
-                            actualBlockShapePV,
-                            qSBlockSize,
-                            qNBlockSize,
-                            (stackSeqCount - PRE_LAUNCH == 0),
-                            nowkvSIdx + 1 >= kvSLoopNumTotal,
-                            curStackTileMod);
-#endif
+                    while (taskIdx >= curTotalTaskNumTmp) {
+                        ++curBatchTmp;
+                        preTotalTaskNumTmp = curTotalTaskNumTmp;
+                        uint32_t qSeqlenTmp = fATilingData->maxQSeqlen;
+                        uint32_t kvSeqlenTmp = static_cast<uint32_t>(gActualKvseqlen.GetValue(curBatchTmp));
+                        if constexpr (INPUT_LAYOUT == FaiKenel::inputLayout::TND) {
+                            uint32_t prevQSeqlenSumTmp = static_cast<uint32_t>(gActualQseqlen.GetValue(curBatchTmp));
+                            qSeqlenTmp = static_cast<uint32_t>(gActualQseqlen.GetValue(curBatchTmp + 1)) - prevQSeqlenSumTmp;
+                            if constexpr (!PAGED_CACHE_FLAG) {
+                                uint32_t prevKvSeqlenSumTmp = static_cast<uint32_t>(gActualKvseqlen.GetValue(curBatchTmp));
+                                kvSeqlenTmp = static_cast<uint32_t>(gActualKvseqlen.GetValue(curBatchTmp + 1)) - prevKvSeqlenSumTmp;
+                            }
+                        }
+
+                        uint32_t curQNBlockTileTmp = GetQNBlockTile(qSeqlenTmp, groupSize);
+                        uint32_t qNBlockNumPerGroupTmp = CeilDiv(groupSize, curQNBlockTileTmp);
+                        uint32_t curQNBlockNumTmp = qNBlockNumPerGroupTmp * kvHeads;
+                        uint32_t curQSBlockTileTmp = GetQSBlockTile(kvSeqlenTmp);
+                        uint32_t curQSBlockNumTmp = CeilDiv(qSeqlenTmp, curQSBlockTileTmp);
+                        curTotalTaskNumTmp += curQNBlockNumTmp * curQSBlockNumTmp;
                     }
-                    stackSeqCount++;
+
+                    uint32_t qSeqlenCur = fATilingData->maxQSeqlen;
+                    uint32_t kvSeqlenCur = static_cast<uint32_t>(gActualKvseqlen.GetValue(curBatchTmp));
+                    if constexpr (INPUT_LAYOUT == FaiKenel::inputLayout::TND) {
+                        uint32_t prevQSeqlenSumCur = static_cast<uint32_t>(gActualQseqlen.GetValue(curBatchTmp));
+                        qSeqlenCur = static_cast<uint32_t>(gActualQseqlen.GetValue(curBatchTmp + 1)) - prevQSeqlenSumCur;
+                        if constexpr (!PAGED_CACHE_FLAG) {
+                            uint32_t prevKvSeqlenSumCur = static_cast<uint32_t>(gActualKvseqlen.GetValue(curBatchTmp));
+                            kvSeqlenCur = static_cast<uint32_t>(gActualKvseqlen.GetValue(curBatchTmp + 1)) - prevKvSeqlenSumCur;
+                        }
+                    }
+                    uint32_t curQNBlockTileCur = GetQNBlockTile(qSeqlenCur, groupSize);
+                    uint32_t qNBlockNumPerGroupCur = CeilDiv(groupSize, curQNBlockTileCur);
+                    uint32_t curQNBlockNumCur = qNBlockNumPerGroupCur * kvHeads;
+
+                    uint32_t taskIdxCurBatch = taskIdx - preTotalTaskNumTmp;
+                    uint32_t qSBlockIdxCur = taskIdxCurBatch / curQNBlockNumCur;
+                    uint32_t qNBlockIdxCur = taskIdxCurBatch - qSBlockIdxCur * curQNBlockNumCur;
+
+                    runMainLoop(
+                        coreIdx, curBatchTmp, qNBlockIdxCur, qSBlockIdxCur,
+                        false, 0, 0,
+                        0, 0,
+                        globalTensors
+                    );
                 }
             }
+
 #ifdef __DAV_C220_CUBE__
             AscendC::WaitFlag<AscendC::HardEvent::M_MTE1>(EVENT_ID0);
             AscendC::WaitFlag<AscendC::HardEvent::M_MTE1>(EVENT_ID1);
@@ -523,13 +401,460 @@ namespace SplitFuse {
             AscendC::WaitFlag<AscendC::HardEvent::V_MTE2>(EVENT_ID3);
 #endif
             AscendC::PipeBarrier<PIPE_ALL>();
+
+            if constexpr (IS_FD) {
+                AscendC::SyncAll();
+#ifdef __DAV_C220_VEC__
+                CombineScale combineScale;
+                combineScale.init(resource);
+                combineScale(
+                    qHeads,
+                    fATilingData->totalSplitNodeNum,
+                    embedV,
+                    fATilingData->splitInfo,
+                    gLseFD,
+                    gOFD,
+                    gO,
+                    gActualQseqlen,
+                    true,
+                    (LSE_MODE == Epilogue::LseModeT::OUT_ONLY),
+                    gLse
+                );
+#endif
+            }
+        }
+
+        __aicore__ inline void runMainLoop(
+            uint32_t coreIdx,
+            uint32_t BIdx,
+            uint32_t qNBlockIdx,
+            uint32_t qSBlockIdx,
+            bool isSplitKV,
+            int32_t stS2IdxNow,
+            int32_t enS2IdxNow,
+            uint64_t gmOffsetLseFD,
+            uint64_t gmOffsetOFD,
+            GlobalTensorBundle& globalTensors
+        ) {
+            auto& gQ = globalTensors.gQ;
+            auto& gK = globalTensors.gK;
+            auto& gV = globalTensors.gV;
+            auto& gMask = globalTensors.gMask;
+            auto& gBlockTable = globalTensors.gBlockTable;
+            auto& gActualQseqlen = globalTensors.gActualQseqlen;
+            auto& gActualKvseqlen = globalTensors.gActualKvseqlen;
+            auto& gO = globalTensors.gO;
+            auto& gLse = globalTensors.gLse;
+            auto& gLseFD = globalTensors.gLseFD;
+            auto& gOFD = globalTensors.gOFD;
+            auto& gS = globalTensors.gS;
+            auto& gP = globalTensors.gP;
+            auto& gOTmp = globalTensors.gOTmp;
+            auto& gOUpdate = globalTensors.gOUpdate;
+
+            uint32_t qSeqlen = maxQSeqlen;
+            uint32_t kvSeqlen = static_cast<uint32_t>(gActualKvseqlen.GetValue(BIdx));
+            uint32_t prevQSeqlenSum = 0;
+            uint32_t prevKvSeqlenSum = 0;
+
+            if constexpr (INPUT_LAYOUT == FaiKenel::inputLayout::TND) {
+                prevQSeqlenSum = static_cast<uint32_t>(gActualQseqlen.GetValue(BIdx));
+                qSeqlen = static_cast<uint32_t>(gActualQseqlen.GetValue(BIdx + 1)) - prevQSeqlenSum;
+                if constexpr (!PAGED_CACHE_FLAG) {
+                    prevKvSeqlenSum = static_cast<uint32_t>(gActualKvseqlen.GetValue(BIdx));
+                    kvSeqlen = static_cast<uint32_t>(gActualKvseqlen.GetValue(BIdx + 1)) - prevKvSeqlenSum;
+                }
+            } else {
+                // BSND: Q/O/LSE per-batch storage step is maxQSeqlen.
+                prevQSeqlenSum = BIdx * maxQSeqlen;
+                if constexpr (!PAGED_CACHE_FLAG) {
+                    // Mirror mha_fwd_kvcache_2.cpp semantics: per-batch K/V step
+                    // uses each batch's actual kvSeqlen (prefix sum across batches).
+                    for (uint32_t b = 0; b < BIdx; b++) {
+                        prevKvSeqlenSum += static_cast<uint32_t>(gActualKvseqlen.GetValue(b));
+                    }
+                }
+            }
+
+            uint64_t qBOffset = static_cast<uint64_t>(prevQSeqlenSum) * strideQ;
+            uint64_t kBOffset = 0;
+            uint64_t vBOffset = 0;
+            uint64_t blockBOffset = 0;
+            if constexpr (!PAGED_CACHE_FLAG) {
+                kBOffset = static_cast<uint64_t>(prevKvSeqlenSum) * strideK;
+                vBOffset = static_cast<uint64_t>(prevKvSeqlenSum) * strideV;
+            } else {
+                blockBOffset = static_cast<uint64_t>(BIdx) * static_cast<uint64_t>(maxNumBlocksPerBatch);
+            }
+            uint64_t oBOffset = static_cast<uint64_t>(prevQSeqlenSum) * strideO;
+            uint64_t lseBOffset = static_cast<uint64_t>(prevQSeqlenSum) * qHeads;
+
+            uint32_t curQNBlockTile = GetQNBlockTile(qSeqlen, groupSize);
+            uint32_t qNBlockNumPerGroup = CeilDiv(groupSize, curQNBlockTile);
+            uint32_t curQSBlockTile = GetQSBlockTile(kvSeqlen);
+            uint32_t curQSBlockNum = CeilDiv(qSeqlen, curQSBlockTile);
+            uint32_t curKSBlockNum = CeilDiv(kvSeqlen, MAX_KV_STACK_LEN);
+
+            uint32_t qNBlockIdxCurGroup = qNBlockIdx % qNBlockNumPerGroup;
+            uint32_t kvNIdx = qNBlockIdx / qNBlockNumPerGroup;
+            uint32_t qNStartIdx = kvNIdx * groupSize + qNBlockIdxCurGroup * curQNBlockTile;
+            uint32_t lseTokenOffset = qSBlockIdx * curQSBlockTile * qHeads;
+
+            uint64_t gmOffsetQ = qBOffset +
+                static_cast<uint64_t>(qSBlockIdx * curQSBlockTile) * strideQ +
+                static_cast<uint64_t>(qNStartIdx * embed);
+            uint64_t gmOffsetK = kBOffset + static_cast<uint64_t>(kvNIdx * embed);
+            uint64_t gmOffsetV = vBOffset + static_cast<uint64_t>(kvNIdx * embedV);
+            uint64_t gmOffsetO = oBOffset +
+                static_cast<uint64_t>(qSBlockIdx * curQSBlockTile) * strideO +
+                static_cast<uint64_t>(qNStartIdx * embedV);
+            uint64_t gmOffsetLse = lseBOffset +
+                static_cast<uint64_t>(lseTokenOffset + qNStartIdx);
+
+            uint32_t qSBlockSize = (qSBlockIdx == (curQSBlockNum - 1U)) ?
+                (qSeqlen - qSBlockIdx * curQSBlockTile) : curQSBlockTile;
+            uint32_t qNBlockSize = (qNBlockIdxCurGroup == (qNBlockNumPerGroup - 1U)) ?
+                (groupSize - qNBlockIdxCurGroup * curQNBlockTile) : curQNBlockTile;
+            uint32_t rowNum = qSBlockSize * qNBlockSize;
+
+            uint32_t noSkipKvS = kvSeqlen;
+            if (maskType != 0U) {
+                int64_t diffS = kvSeqlen - qSeqlen;
+                diffS = (diffS < 0) ? 0 : diffS;
+                noSkipKvS = (qSBlockIdx + 1U) * curQSBlockTile + diffS;
+                noSkipKvS = AscendC::Std::min((uint32_t)kvSeqlen, noSkipKvS);
+            }
+            uint32_t kvSLoopNumTotal = CeilDiv(noSkipKvS, MAX_KV_STACK_LEN);
+
+            uint32_t kvStart = 0;
+            uint32_t kvEnd = kvSLoopNumTotal;
+            if constexpr (IS_FD) {
+                kvStart = (uint32_t)stS2IdxNow;
+                kvEnd = (enS2IdxNow == static_cast<int32_t>(curKSBlockNum)) ?
+                    kvSLoopNumTotal : (uint32_t)enS2IdxNow;
+            }
+
+            int32_t stackSeqCount = 0;
+            uint32_t preKVNum = PRE_LAUNCH;
+            uint32_t blockStackNum = (MAX_KV_STACK_LEN - 1 + pagedBlockSize) / pagedBlockSize;
+            uint32_t stackSeqTile = MAX_KV_STACK_LEN;
+            uint32_t stackSeqTilePad = MAX_KV_STACK_LEN;
+
+#ifdef __DAV_C220_CUBE__
+            LayoutQ layoutQTemp(rowNum, embed);
+            LayoutK layoutKTemp(strideK, stackSeqTile);
+            LayoutV layoutVTemp(stackSeqTile, strideV);
+            blockMmadQK.resetBlockStart();
+            blockMmadPV.resetBlockStart();
+            blockMmadQK.loadQGM(gQ[gmOffsetQ], layoutQTemp, rowNum, qNBlockSize, qHeads);
+#endif
+            for (uint32_t kvSIdx = kvStart; kvSIdx < kvEnd + preKVNum; kvSIdx++) {
+                if (kvSIdx < kvEnd) {
+                    if (kvSIdx + 1 > kvSLoopNumTotal - 1U) {
+                        stackSeqTile = noSkipKvS - kvSIdx * MAX_KV_STACK_LEN;
+                    } else {
+                        stackSeqTile = MAX_KV_STACK_LEN;
+                    }
+                    uint32_t curStackTileMod = stackSeqCount % (PRE_LAUNCH + 1U);
+                    uint64_t gmOffsetS =
+                        static_cast<uint64_t>(coreIdx * WORKSPACE_BLOCK_SIZE_DB * (PRE_LAUNCH + 1U) +
+                        curStackTileMod * WORKSPACE_BLOCK_SIZE_DB);
+                    GemmCoord actualBlockShapeQK{rowNum, stackSeqTile, embed};
+                    LayoutS layOutS(rowNum, stackSeqTile, stackSeqTilePad);
+#ifdef __DAV_C220_CUBE__
+                    if constexpr (PAGED_CACHE_FLAG) {
+                        blockMmadQK(
+                            gQ[gmOffsetQ],
+                            gK[gmOffsetK],
+                            gS[gmOffsetS],
+                            gBlockTable[blockBOffset],
+                            layoutQTemp,
+                            layoutKTemp,
+                            layOutS,
+                            actualBlockShapeQK,
+                            kvSIdx,
+                            kvSLoopNumTotal,
+                            pagedBlockSize,
+                            strideK);
+                    } else {
+                        blockMmadQK(
+                            gQ[gmOffsetQ],
+                            gK[gmOffsetK],
+                            gS[gmOffsetS],
+                            gBlockTable,
+                            layoutQTemp,
+                            layoutKTemp,
+                            layOutS,
+                            actualBlockShapeQK,
+                            kvSIdx,
+                            kvSLoopNumTotal,
+                            pagedBlockSize,
+                            strideK);
+                    }
+                    Arch::CrossCoreSetFlag<0x2, PIPE_FIX>(qkReady);
+#endif
+#ifdef __DAV_C220_VEC__
+                    LayoutP layOutP(rowNum, stackSeqTile, stackSeqTilePad);
+                    LayoutMask layOutMask(COMP_TRIU_MASK_DIM_LEN, COMP_TRIU_MASK_DIM_LEN);
+                    uint64_t gmOffsetP = gmOffsetS;
+                    uint32_t kvSStartIdx = kvSIdx * MAX_KV_STACK_LEN;
+                    uint32_t kvSEndIdx = kvSStartIdx + stackSeqTile;
+                    if constexpr (MASK_TYPE == FaiKenel::MaskType::MASK_CAUSAL) {
+                        uint32_t triUp = noSkipKvS - qSBlockSize;
+                        uint32_t triDown = noSkipKvS;
+                        bool doTriUMask = triUp < kvSEndIdx - 1;
+                        if (doTriUMask) {
+                            if constexpr (IS_FD) {
+                                epilogueOnlineSoftmax(
+                                    gP[gmOffsetP],
+                                    gS[gmOffsetS],
+                                    gMask,
+                                    layOutP,
+                                    layOutS,
+                                    layOutMask,
+                                    actualBlockShapeQK,
+                                    (stackSeqCount == 0),
+                                    qSBlockSize,
+                                    qNBlockSize,
+                                    curStackTileMod,
+                                    qkReady,
+                                    triUp,
+                                    triDown,
+                                    kvSStartIdx,
+                                    kvSEndIdx,
+                                    isSplitKV);
+                            } else {
+                                epilogueOnlineSoftmax(
+                                    gP[gmOffsetP],
+                                    gS[gmOffsetS],
+                                    gMask,
+                                    layOutP,
+                                    layOutS,
+                                    layOutMask,
+                                    actualBlockShapeQK,
+                                    (stackSeqCount == 0),
+                                    qSBlockSize,
+                                    qNBlockSize,
+                                    curStackTileMod,
+                                    qkReady,
+                                    triUp,
+                                    triDown,
+                                    kvSStartIdx,
+                                    kvSEndIdx,
+                                    false);
+                            }
+                        } else {
+                            uint32_t noMaskStackSeqNum = (triUp + 1) / MAX_KV_STACK_LEN;
+                            Arch::CrossCoreWaitFlag(qkReady);
+                            int32_t lastNoMaskStackId;
+                            if constexpr (IS_FD) {
+                                lastNoMaskStackId = (int32_t)noMaskStackSeqNum - 1 - (int32_t)kvStart;
+                                epilogueOnlineSoftmax(
+                                    gP[gmOffsetP],
+                                    gS[gmOffsetS],
+                                    layOutP,
+                                    layOutS,
+                                    actualBlockShapeQK,
+                                    (stackSeqCount == 0),
+                                    (stackSeqCount == lastNoMaskStackId),
+                                    qSBlockSize,
+                                    qNBlockSize, 
+                                    curStackTileMod,
+                                    isSplitKV);
+                            } else {
+                                epilogueOnlineSoftmax(
+                                    gP[gmOffsetP],
+                                    gS[gmOffsetS],
+                                    layOutP,
+                                    layOutS,
+                                    actualBlockShapeQK,
+                                    (stackSeqCount == 0),
+                                    (stackSeqCount == noMaskStackSeqNum - 1),
+                                    qSBlockSize,
+                                    qNBlockSize, 
+                                    curStackTileMod,
+                                    false);
+                            }
+                        }
+                    } else {
+                        Arch::CrossCoreWaitFlag(qkReady);
+                        if constexpr (IS_FD) {
+                            epilogueOnlineSoftmax(
+                                gP[gmOffsetP],
+                                gS[gmOffsetS],
+                                layOutP,
+                                layOutS,
+                                actualBlockShapeQK,
+                                (stackSeqCount == 0),
+                                0,
+                                qSBlockSize,
+                                qNBlockSize, 
+                                curStackTileMod,
+                                isSplitKV);
+                        } else {
+                            epilogueOnlineSoftmax(
+                                gP[gmOffsetP],
+                                gS[gmOffsetS],
+                                layOutP,
+                                layOutS,
+                                actualBlockShapeQK,
+                                (stackSeqCount == 0),
+                                0,
+                                qSBlockSize,
+                                qNBlockSize,
+                                curStackTileMod,
+                                false);
+                        }
+                    }
+                    Arch::CrossCoreSetFlag<0x2, PIPE_MTE3>(softmaxReady);
+#endif
+                }
+                if (kvSIdx >= kvStart + preKVNum) {
+                    uint32_t nowkvSIdx = kvSIdx - preKVNum;
+                    if (nowkvSIdx + 1 > kvSLoopNumTotal - 1U) {
+                        stackSeqTile = noSkipKvS - nowkvSIdx * MAX_KV_STACK_LEN;
+                    } else {
+                        stackSeqTile = MAX_KV_STACK_LEN;
+                    }
+                    uint32_t curStackTileMod = (stackSeqCount - PRE_LAUNCH) % (PRE_LAUNCH + 1U);
+                    uint64_t gmOffsetOTmp =
+                        static_cast<uint64_t>(coreIdx * WORKSPACE_BLOCK_SIZE_DB * (PRE_LAUNCH + 1U) +
+                        curStackTileMod * WORKSPACE_BLOCK_SIZE_DB);
+                    GemmCoord actualBlockShapePV{rowNum, embedV, stackSeqTile};
+                    LayoutOTmp layoutOTmp(rowNum, embedV, embedRoundV);
+#ifdef __DAV_C220_CUBE__
+                    LayoutP layoutPTemp(rowNum, stackSeqTile, stackSeqTilePad);
+                    uint64_t gmOffsetP = coreIdx * WORKSPACE_BLOCK_SIZE_DB * (PRE_LAUNCH + 1) +
+                        curStackTileMod * WORKSPACE_BLOCK_SIZE_DB;
+                    if constexpr (PAGED_CACHE_FLAG) {
+                        blockMmadPV(
+                            gP[gmOffsetP],
+                            gV[gmOffsetV],
+                            gOTmp[gmOffsetOTmp],
+                            gBlockTable[blockBOffset],
+                            layoutPTemp,
+                            layoutVTemp,
+                            layoutOTmp,
+                            actualBlockShapePV,
+                            nowkvSIdx,
+                            kvSLoopNumTotal,
+                            pagedBlockSize,
+                            noSkipKvS,
+                            strideV,
+                            blockStackNum,
+                            softmaxReady);
+                    } else {
+                        blockMmadPV(
+                            gP[gmOffsetP],
+                            gV[gmOffsetV],
+                            gOTmp[gmOffsetOTmp],
+                            gBlockTable,
+                            layoutPTemp,
+                            layoutVTemp,
+                            layoutOTmp,
+                            actualBlockShapePV,
+                            nowkvSIdx,
+                            kvSLoopNumTotal,
+                            pagedBlockSize,
+                            noSkipKvS,
+                            strideV,
+                            blockStackNum,
+                            softmaxReady);
+                    }
+                    Arch::CrossCoreSetFlag<0x2, PIPE_FIX>(pvReady);
+#endif
+#ifdef __DAV_C220_VEC__
+                    LayoutO layoutO(qSeqlen, embed * qHeads);
+                    LayoutUpdate layoutUpdate(rowNum, embed, embedRound);
+                    LayoutLse layoutLse(totalQTokens, qHeads);
+                    uint64_t gmOffsetUpdate = (uint64_t)(coreIdx * WORKSPACE_BLOCK_SIZE_DB);
+                    Arch::CrossCoreWaitFlag(pvReady);
+
+                    if constexpr (IS_FD) {
+                        LayoutLse layoutgmLse(qSBlockSize, qNBlockSize);
+                        LayoutLse layoutgmLo(qSBlockSize, embed * qNBlockSize);
+                        typename EpilogueRescaleO::SplitKVParams splitParams;
+                        splitParams.isSplitkv = isSplitKV;
+                        splitParams.gCombineLse = gLseFD[gmOffsetLseFD];
+                        splitParams.gCombineo = gOFD[gmOffsetOFD];
+                        splitParams.layoutgmLse = &layoutgmLse;
+                        splitParams.layoutgmLo = &layoutgmLo;
+
+                        epilogueRescaleO(
+                            gO[gmOffsetO],
+                            gOTmp[gmOffsetOTmp],
+                            gOUpdate[gmOffsetUpdate],
+                            gLse[gmOffsetLse],
+                            layoutO,
+                            layoutOTmp,
+                            layoutUpdate,
+                            layoutLse,
+                            actualBlockShapePV,
+                            qSBlockSize,
+                            qNBlockSize,
+                            (stackSeqCount - PRE_LAUNCH == 0),
+                            nowkvSIdx + 1 >= kvEnd,
+                            curStackTileMod,
+                            splitParams);
+                    } else {
+                        epilogueRescaleO(
+                            gO[gmOffsetO],
+                            gOTmp[gmOffsetOTmp],
+                            gOUpdate[gmOffsetUpdate],
+                            gLse[gmOffsetLse],
+                            layoutO,
+                            layoutOTmp,
+                            layoutUpdate,
+                            layoutLse,
+                            actualBlockShapePV,
+                            qSBlockSize,
+                            qNBlockSize,
+                            (stackSeqCount - PRE_LAUNCH == 0),
+                            nowkvSIdx + 1 >= kvSLoopNumTotal,
+                            curStackTileMod);
+                    }
+#endif
+                }
+                stackSeqCount++;
+            }
         }
 
     private:
+        uint64_t mm1OutSize;
+        uint64_t smOnlineOutSize;
+        uint64_t mm2OutSize;
+        uint32_t batch;
+        uint32_t qHeads;
+        uint32_t kvHeads;
+        uint32_t embed;
+        uint32_t embedV;
+        uint32_t pagedBlockSize;
+        uint32_t maxNumBlocksPerBatch;
+        uint32_t firstBatchTaskNum;
+        uint32_t totalTaskNum;
+        uint32_t blockSize;
+        uint32_t maskType;
+        float    scaleValue;
+        uint32_t totalQTokens;
+        uint32_t maxQSeqlen;
+
+        uint64_t strideQ;
+        uint64_t strideO;
+        uint64_t strideK;
+        uint64_t strideV;
+        uint32_t embedRound;
+        uint32_t embedRoundV;
+        uint32_t groupSize;
+
         Arch::Resource<ArchTag> resource;
         Arch::CrossCoreFlag qkReady{QK_READY_ID};
         Arch::CrossCoreFlag softmaxReady{SOFTMAX_READY_ID};
         Arch::CrossCoreFlag pvReady{PV_READY_ID};
+
+        BlockMmadQK blockMmadQK;
+        BlockMmadPV blockMmadPV;
+        EpilogueOnlineSoftmax epilogueOnlineSoftmax;
+        EpilogueRescaleO epilogueRescaleO;
     };
 }
 
@@ -539,6 +864,7 @@ namespace SplitFuse {
         typename InputDtypeKv = half,
         typename IntermCalcPrec = float,
         bool PagedCacheFlag = false,
+        bool IS_FD = false,
         FaiKenel::MaskType maskCategory = FaiKenel::MaskType::NO_MASK,
         FaiKenel::inputLayout inLayout = FaiKenel::inputLayout::TND,
         Epilogue::LseModeT lseMode = Epilogue::LseModeT::NONE>
@@ -571,7 +897,7 @@ namespace SplitFuse {
         using LayoutP = layout::RowMajor;
         using ElementO = InputDtypeQ;
         using LayoutO = layout::RowMajor;
-        using ElementLse = float; 
+        using ElementLse = float;
         using LayoutLse = layout::RowMajor;
         using ElementMask = int8_t;
         using LayoutMask = layout::RowMajor;
@@ -610,10 +936,18 @@ namespace SplitFuse {
         using EpilogueRescaleO =
             Epilogue::Block::BlockEpilogue<DispatchPolicyRescaleO, OType, OTmpType, OUpdateType, LseType>;
 
-        using FAInferKernel = FAInferKernel<BlockMmadQK, BlockMmadPV, EpilogueOnlineSoftmax, EpilogueRescaleO,
-                                            PagedCacheFlag, maskCategory, inLayout>;
+
+        using SplitInfoType = std::conditional_t<IS_FD, splitNode[25], void>;
+        using CombineScale = std::conditional_t<IS_FD,
+            Epilogue::Block::CombineScale<OType, LseType, SplitInfoType>, void>;
+        using FAInferKernelType = std::conditional_t<IS_FD,
+            FAInferKernel<BlockMmadQK, BlockMmadPV, EpilogueOnlineSoftmax, EpilogueRescaleO,
+                          PagedCacheFlag, maskCategory, inLayout, CombineScale, IS_FD>,
+            FAInferKernel<BlockMmadQK, BlockMmadPV, EpilogueOnlineSoftmax, EpilogueRescaleO,
+                          PagedCacheFlag, maskCategory, inLayout>>;
+
         FAIKernelParams params{q, k, v, mask, blockTables, actualQseqlen, actualKvseqlen, o, lse, workspace, tiling};
-        FAInferKernel flashAttnInfer;
+        FAInferKernelType flashAttnInfer;
         flashAttnInfer(params);
     }
 }

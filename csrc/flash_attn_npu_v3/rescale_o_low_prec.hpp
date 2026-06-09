@@ -68,7 +68,13 @@ public:
     static constexpr uint32_t SIZE_OF_16BIT = 2;
 
     __aicore__ inline
-    BlockEpilogue(Arch::Resource<ArchTag> &resource)
+    BlockEpilogue() {}
+
+    __aicore__ inline
+    ~BlockEpilogue() {}
+
+    __aicore__ inline
+    void init(Arch::Resource<ArchTag> &resource)
     {
         constexpr uint32_t LO_UB_TENSOR_OFFSET = 6 * UB_UINT8_BLOCK_SIZE;
         constexpr uint32_t GO_UB_TENSOR_OFFSET = 8 * UB_UINT8_BLOCK_SIZE;
@@ -92,9 +98,6 @@ public:
         lse16_ubuf_tensor = resource.ubBuf.template GetBufferByByte<half>(LSE16_UB_TENSOR_OFFSET);
         lse32_ubuf_tensor = resource.ubBuf.template GetBufferByByte<float>(LSE32_UB_TENSOR_OFFSET);
     }
-
-    __aicore__ inline
-    ~BlockEpilogue() {}
 
     __aicore__ inline
     void SetMask(int32_t len)

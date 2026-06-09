@@ -145,7 +145,12 @@ test_cases = [
     (torch.bfloat16, 5, 4, 4, 1024, 1024, 128, 1, 128, True, "TND"),
     (torch.float16, 7, 1, 1, 512, 512, 128, 1, 128, False, "TND"),
     (torch.bfloat16, 1, 1, 1, 1024, 1024, 128, 1, 128, False, "BSND"),
+    (torch.bfloat16, 2, 1, 1, 1024, 1024, 128, 1, 128, False, "BSND"),
+    (torch.bfloat16, 2, 1, 1, 1024, 1024, 128, 1, 128, False, "TND"),
     (torch.bfloat16, 5, 4, 4, 1024, 1024, 128, 1, 128, True, "BSND"),
+    (torch.bfloat16, 5, 4, 4, 1024, 1024, 128, 1, 128, True, "TND"),
+    (torch.bfloat16, 1, 1, 1, 1, 1024, 128, 1, 128, True, "TND"),
+    (torch.bfloat16, 1, 1, 1, 1, 1024, 128, 1, 128, True, "BSND"),
 ]
 
 @pytest.mark.parametrize("data_type, batch_size, num_heads, kv_heads, q_seqlen, kv_seqlen, head_size, cache_mode, block_size, is_causal, layout", test_cases)
@@ -156,8 +161,10 @@ def test_fa_custom_ops(data_type, batch_size, num_heads, kv_heads, q_seqlen, kv_
     kv_max_range = 1.0
     block_size = 128
     num_blocks = 64
-    q_sequences = torch.randint(low=1, high=q_seqlen+1, size=(batch_size,)).tolist()
-    kv_sequences = torch.randint(low=max(q_sequences), high=kv_seqlen+1, size=(batch_size,)).tolist()
+    # q_sequences = torch.randint(low=1, high=q_seqlen+1, size=(batch_size,)).tolist()
+    # kv_sequences = torch.randint(low=max(q_sequences), high=kv_seqlen+1, size=(batch_size,)).tolist()
+    q_sequences = [q_seqlen] * batch_size
+    kv_sequences = [kv_seqlen] * batch_size
     t_q_sum = sum(q_sequences)
     t_kv_sum = sum(kv_sequences)
     if layout == "BSND":

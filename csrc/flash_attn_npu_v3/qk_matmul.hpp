@@ -90,9 +90,15 @@ public:
     static_assert(std::is_same_v<LayoutC, layout::RowMajor>, "LayoutC only support RowMajor yet!");
 
     __aicore__ inline
-    BlockMmad(Arch::Resource<ArchTag> &resource, uint32_t nDyn, uint32_t kDyn, uint32_t KVStackLen = 512,
-        uint32_t l1BufAddrStart = 0)
-    {   
+    BlockMmad() {}
+
+    __aicore__ inline
+    ~BlockMmad() {}
+
+    __aicore__ inline
+    void init(Arch::Resource<ArchTag> &resource, uint32_t nDyn, uint32_t kDyn,
+              uint32_t KVStackLen = 512, uint32_t l1BufAddrStart = 0)
+    {
         maxKVStackLen = KVStackLen;
         // Allocate L1 memory space
         l1ATensor = resource.l1Buf.template GetBufferByByte<ElementA>(l1BufAddrStart);
@@ -106,9 +112,6 @@ public:
         l1NDynamic = nDyn;
         l1KDynamic = kDyn;
     }
-
-    __aicore__ inline
-    ~BlockMmad() {}
 
     __aicore__ inline
     void loadQGM(

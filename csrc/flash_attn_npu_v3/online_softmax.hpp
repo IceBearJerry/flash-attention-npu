@@ -60,7 +60,13 @@ public:
     static constexpr int64_t UB_FLOAT_LINE_SIZE = 64;
 
     __aicore__ inline
-    BlockEpilogue(Arch::Resource<ArchTag> &resource, float scaleValue_)
+    BlockEpilogue() {}
+
+    __aicore__ inline
+    ~BlockEpilogue() {}
+
+    __aicore__ inline
+    void init(Arch::Resource<ArchTag> &resource, float scaleValue_)
     {
         // Allocate UB space
         constexpr uint32_t LS_UB_TENSOR_OFFSET = 0;
@@ -93,9 +99,6 @@ public:
         tvUbTensor = resource.ubBuf.template GetBufferByByte<float>(TV_UB_TENSOR_OFFSET);
         glUbTensor = resource.ubBuf.template GetBufferByByte<float>(GL_UB_TENSOR_OFFSET);
     }
-
-    __aicore__ inline
-    ~BlockEpilogue() {}
 
     template <typename T>
     __aicore__ inline T Min(T a, T b)
@@ -764,7 +767,7 @@ public:
         uint32_t rowOffset, uint32_t isFirstStackTile, uint32_t isLastNoMaskStackTile,
         uint32_t isFirstRowLoop, uint32_t isLastRowLoop,
         uint32_t columnNumRound, uint32_t pingpongFlag,
-        uint32_t curStackTileMod)
+        uint32_t curStackTileMod, bool isSplitKV)
     {
         uint32_t rowNumCurLoop = layoutOutput.shape(0);
         uint32_t rowNumCurLoopRound = RoundUp(rowNumCurLoop, FLOAT_BLOCK_SIZE);
@@ -774,8 +777,11 @@ public:
         uint32_t dmUbOffsetCurCycle = curStackTileMod * MAX_ROW_NUM_SUB_CORE + rowOffset;
 
         if constexpr (LSE_MODE_ == LseModeT::OUT_ONLY) {
-            // In lse out-only mode, tv is used in the last stack tile to transport lse
             if (isFirstStackTile && isFirstRowLoop) {
+                AscendC::WaitFlag<AscendC::HardEvent::MTE3_V>(EVENT_ID4);
+            }
+        } else {
+            if (isFirstStackTile && isFirstRowLoop && isSplitKV) {
                 AscendC::WaitFlag<AscendC::HardEvent::MTE3_V>(EVENT_ID4);
             }
         }
@@ -817,7 +823,7 @@ public:
     void operator()(AscendC::GlobalTensor<ElementOutput> gOutput, AscendC::GlobalTensor<ElementInput> gInput,
         const LayoutOutput &layoutOutput, const LayoutInput &layoutInput, GemmCoord actualBlockShape,
         uint32_t isFirstStackTile, uint32_t isLastNoMaskStackTile,
-        uint32_t qSBlockSize, uint32_t qNBlockSize, uint32_t curStackTileMod)
+        uint32_t qSBlockSize, uint32_t qNBlockSize, uint32_t curStackTileMod, bool isSplitKV = false)
     {
         uint32_t rowNum = actualBlockShape.m();
         uint32_t columnNum = actualBlockShape.n();
@@ -879,7 +885,8 @@ public:
                     (delayedRowLoopIdx == rowLoopNum - 1),
                     columnNumRound,
                     pingpongFlag,
-                    curStackTileMod);
+                    curStackTileMod,
+                    isSplitKV);
             }
         }
     }
@@ -889,7 +896,7 @@ public:
         AscendC::GlobalTensor<ElementMask> gMask, const LayoutOutput &layoutOutput, const LayoutInput &layoutInput,
         const LayoutInput &layoutMask, GemmCoord actualBlockShape, uint32_t isFirstStackTile, uint32_t qSBlockSize,
         uint32_t qNBlockSize, uint32_t curStackTileMod, Arch::CrossCoreFlag qkReady, uint32_t triUp, uint32_t triDown,
-        uint32_t kvSStartIdx, uint32_t kvSEndIdx)
+        uint32_t kvSStartIdx, uint32_t kvSEndIdx, bool isSplitKV = false)
     {
         uint32_t rowNum = actualBlockShape.m();
         uint32_t columnNum = actualBlockShape.n();
@@ -1035,7 +1042,8 @@ public:
                     (delayedRowLoopIdx == rowLoopNum - 1),
                     columnNumRound,
                     pingpongFlag,
-                    curStackTileMod);
+                    curStackTileMod,
+                    isSplitKV);
             }
         }
     }
