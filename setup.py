@@ -90,6 +90,7 @@ class BishengBuildExt(build_ext):
             "-shared",
             "-fPIC",
             "-std=c++17",
+            "-DCATLASS_ARCH=2201",
             abi_flag,
             *[f"-I{p}" for p in asc_include_paths],
             f"-I{python_include}",
@@ -141,6 +142,7 @@ else:
     ), "csrc/catlass is missing, please use source distribution or git clone"
 
 source_files = glob.glob(os.path.join(this_dir, "csrc/flash_attn_npu", "flash_api.cpp"), recursive=True)
+source_files += glob.glob(os.path.join(this_dir, "csrc/flash_attn_npu", "fag_general_host.cpp"), recursive=True)
 source_files_v3 = glob.glob(os.path.join(this_dir, "csrc/flash_attn_npu_v3", "flash_api.cpp"), recursive=True)
 
 if not SKIP_NPU_BUILD:

@@ -6,11 +6,12 @@
 #include "tiling/platform/platform_ascendc.h"
 #include "mha_varlen_bwd.cpp"
 #include "fag_tiling.cpp"
+#include "fag_general_host.hpp"
 #include "torch_npu/csrc/core/npu/NPUStream.h"
 #include "runtime/rt_ffts.h"
 #include "kernel_common.hpp"
 #include "kernel_operator.h"
-
+#include "kernel_operator.h"
 
 uint32_t GetQNBlockTile(uint32_t qSeqlen, uint32_t groupSize)
 {
@@ -717,7 +718,7 @@ mha_varlen_bwd(const at::Tensor &dout,                   // total_q x num_heads 
 
     seqlens_q = cu_seqlens_q;
     seqlens_k = cu_seqlens_k;
-    
+
     if (dq_.has_value()) {
         dq = dq_.value();
     }  else {
@@ -741,6 +742,15 @@ mha_varlen_bwd(const at::Tensor &dout,                   // total_q x num_heads 
     uint32_t nheads_k = ksizes[1];
     uint32_t headdim = qsizes[2];
 
+    if (!seqlens_q.equal(seqlens_k)) {
+        float scale = softmax_scale > 0.f ? softmax_scale : (1.0f / sqrt(static_cast<float>(headdim)));
+        return launch_fag_general(
+            dout, q, k, v, out, softmax_lse, dq, dk, dv,
+            seqlens_q, seqlens_k,
+            max_seqlen_q, max_seqlen_k,
+            scale, is_causal, window_size_left, window_size_right, deterministic);
+    }
+
     // tiling args set
     uint32_t tilingSize = TILING_PARA_NUM * sizeof(int64_t);
     at::Tensor tiling_cpu_tensor = at::empty({tilingSize}, at::device(c10::kCPU).dtype(at::kByte));
@@ -754,7 +764,6 @@ mha_varlen_bwd(const at::Tensor &dout,                   // total_q x num_heads 
     fagInfo.queryShape_2 = headdim;
     fagInfo.scaleValue = 1.0 / sqrt(headdim);
     FAGTiling::GetFATilingParam(fagInfo, blockDim, reinterpret_cast<int64_t *>(tiling_cpu_tensor.data_ptr<uint8_t>()));
-    // FAGTiling::printFAGTilingData(reinterpret_cast<int64_t *>(tiling_cpu_tensor.data_ptr<uint8_t>()));
     at::Tensor tiling_gpu_tensor = tiling_cpu_tensor.to(at::Device(at::kPrivateUse1));
 
     // alloc workspace
@@ -799,12 +808,12 @@ mha_varlen_bwd(const at::Tensor &dout,                   // total_q x num_heads 
         uint8_t *ptrDumpDevice{nullptr};
         aclCheck(aclrtMalloc(reinterpret_cast<void **>(&ptrDumpDevice), ALL_DUMPSIZE, ACL_MEM_MALLOC_HUGE_FIRST));
         if (is_bf16) {
-            FAG::FAG<bfloat16_t><<<blockDim, nullptr, aclStream>>>(
+            FAG::FAGVarlenOpt<bfloat16_t><<<blockDim, nullptr, aclStream>>>(
                 fftsAddr, qDevice, kDevice, vDevice, dOutDevice, nullptr, nullptr, nullptr, nullptr, nullptr,
                 attenMaskDevice, softMaxLseDevice, nullptr, outDevice, nullptr, cuSeqQlenDevice, cuSeqKvlenDevice,
                 nullptr, nullptr, dqDevice, dkDevice, dvDevice, workspaceDevice, tilingDevice, ptrDumpDevice);
         } else {
-            FAG::FAG<half><<<blockDim, nullptr, aclStream>>>(
+            FAG::FAGVarlenOpt<half><<<blockDim, nullptr, aclStream>>>(
                 fftsAddr, qDevice, kDevice, vDevice, dOutDevice, nullptr, nullptr, nullptr, nullptr, nullptr,
                 attenMaskDevice, softMaxLseDevice, nullptr, outDevice, nullptr, cuSeqQlenDevice, cuSeqKvlenDevice,
                 nullptr, nullptr, dqDevice, dkDevice, dvDevice, workspaceDevice, tilingDevice, ptrDumpDevice);
@@ -815,24 +824,24 @@ mha_varlen_bwd(const at::Tensor &dout,                   // total_q x num_heads 
     #else
         if (is_bf16) {
             if (is_causal) {
-                FAG::FAG<bfloat16_t, MaskType::MASK_CAUSAL, InputLayout::TND><<<blockDim, nullptr, aclStream>>>(
+                FAG::FAGVarlenOpt<bfloat16_t, MaskType::MASK_CAUSAL, InputLayout::TND><<<blockDim, nullptr, aclStream>>>(
                     fftsAddr, qDevice, kDevice, vDevice, dOutDevice, nullptr, nullptr, nullptr, nullptr, nullptr,
                     attenMaskDevice, softMaxLseDevice, nullptr, outDevice, nullptr, cuSeqQlenDevice, cuSeqKvlenDevice,
                     nullptr, nullptr, dqDevice, dkDevice, dvDevice, workspaceDevice, tilingDevice, nullptr);
             } else {
-                FAG::FAG<bfloat16_t, MaskType::NO_MASK, InputLayout::TND><<<blockDim, nullptr, aclStream>>>(
+                FAG::FAGVarlenOpt<bfloat16_t, MaskType::NO_MASK, InputLayout::TND><<<blockDim, nullptr, aclStream>>>(
                     fftsAddr, qDevice, kDevice, vDevice, dOutDevice, nullptr, nullptr, nullptr, nullptr, nullptr,
                     attenMaskDevice, softMaxLseDevice, nullptr, outDevice, nullptr, cuSeqQlenDevice, cuSeqKvlenDevice,
                     nullptr, nullptr, dqDevice, dkDevice, dvDevice, workspaceDevice, tilingDevice, nullptr);
             }
         } else {
             if (is_causal) {
-                FAG::FAG<half, MaskType::MASK_CAUSAL, InputLayout::TND><<<blockDim, nullptr, aclStream>>>(
+                FAG::FAGVarlenOpt<half, MaskType::MASK_CAUSAL, InputLayout::TND><<<blockDim, nullptr, aclStream>>>(
                     fftsAddr, qDevice, kDevice, vDevice, dOutDevice, nullptr, nullptr, nullptr, nullptr, nullptr,
                     attenMaskDevice, softMaxLseDevice, nullptr, outDevice, nullptr, cuSeqQlenDevice, cuSeqKvlenDevice,
                     nullptr, nullptr, dqDevice, dkDevice, dvDevice, workspaceDevice, tilingDevice, nullptr);
             } else {
-                FAG::FAG<half, MaskType::NO_MASK, InputLayout::TND><<<blockDim, nullptr, aclStream>>>(
+                FAG::FAGVarlenOpt<half, MaskType::NO_MASK, InputLayout::TND><<<blockDim, nullptr, aclStream>>>(
                     fftsAddr, qDevice, kDevice, vDevice, dOutDevice, nullptr, nullptr, nullptr, nullptr, nullptr,
                     attenMaskDevice, softMaxLseDevice, nullptr, outDevice, nullptr, cuSeqQlenDevice, cuSeqKvlenDevice,
                     nullptr, nullptr, dqDevice, dkDevice, dvDevice, workspaceDevice, tilingDevice, nullptr);
@@ -865,131 +874,32 @@ mha_bwd(const at::Tensor &dout,  // batch_size x seqlen_q x num_heads, x multipl
         std::optional<at::Generator> gen_,
         std::optional<at::Tensor> &rng_state)
 {
-    auto aclStream = c10_npu::getCurrentNPUStream().stream(false);
-    uint32_t blockDim = platform_ascendc::PlatformAscendCManager::GetInstance()->GetCoreNumAic();        
-    
-    // input/output tensor
     at::Tensor dq, dk, dv;
-    bool is_bf16 = q.dtype() == torch::kBFloat16;
-    
     if (dq_.has_value()) {
         dq = dq_.value();
-    }  else {
+    } else {
         dq = torch::empty_like(q);
     }
     if (dk_.has_value()) {
         dk = dk_.value();
-    }  else {
+    } else {
         dk = torch::empty_like(k);
     }
     if (dv_.has_value()) {
         dv = dv_.value();
-    }  else {
+    } else {
         dv = torch::empty_like(v);
     }
 
-    // parse shape args
     auto qsizes = q.sizes();
     auto ksizes = k.sizes();
-    uint32_t nheads = qsizes[2];
-    uint32_t nheads_k = ksizes[2];
-    uint32_t headdim = qsizes[3];
-
-    // tiling args set
-    uint32_t tilingSize = TILING_PARA_NUM * sizeof(int64_t);
-    at::Tensor tiling_cpu_tensor = at::empty({tilingSize}, at::device(c10::kCPU).dtype(at::kByte));
-    FAGTiling::FAGInfo fagInfo;
-    fagInfo.seqQShapeSize = qsizes[0];
-    fagInfo.queryShape_0 = qsizes[0] * qsizes[1];
-    fagInfo.keyShape_0 = ksizes[0] * ksizes[1];
-    fagInfo.queryShape_1 = nheads;
-    fagInfo.keyShape_1 = nheads_k;
-    fagInfo.queryShape_2 = headdim;
-    fagInfo.scaleValue = 1.0 / sqrt(headdim);
-    FAGTiling::GetFATilingParam(fagInfo, blockDim, reinterpret_cast<int64_t *>(tiling_cpu_tensor.data_ptr<uint8_t>()));
-    // FAGTiling::printFAGTilingData(reinterpret_cast<int64_t *>(tiling_cpu_tensor.data_ptr<uint8_t>()));
-    at::Tensor tiling_gpu_tensor = tiling_cpu_tensor.to(at::Device(at::kPrivateUse1));
-
-    // alloc workspace
-    uint64_t workspaceSize = (2 * blockDim * 16 * 128 * 128 * 8 * nheads) * sizeof(float);
-    at::Tensor workspace_tensor = at::empty({static_cast<long>(workspaceSize)},
-        at::device(at::kPrivateUse1).dtype(at::kByte));
-
-    // alloc custom attn_mask
-    at::Tensor mask_gpu_tensor;
-    if (is_causal) {
-        at::Tensor mask_cpu_tensor = at::empty({2048, 2048}, at::device(c10::kCPU).dtype(at::kByte));
-        mask_cpu_tensor = at::triu(at::ones_like(mask_cpu_tensor), 1);
-        mask_gpu_tensor = mask_cpu_tensor.to(at::Device(at::kPrivateUse1));
-    }
-    
-    uint64_t fftsAddr{0};
-    uint32_t fftsLen{0};
-    rtError_t error = rtGetC2cCtrlAddr(&fftsAddr, &fftsLen);
-    auto qDevice = static_cast<uint8_t *>(const_cast<void *>(q.storage().data()));
-    auto kDevice = static_cast<uint8_t *>(const_cast<void *>(k.storage().data()));
-    auto vDevice = static_cast<uint8_t *>(const_cast<void *>(v.storage().data()));
-    auto outDevice = static_cast<uint8_t *>(const_cast<void *>(out.storage().data()));
-    auto dOutDevice = static_cast<uint8_t *>(const_cast<void *>(dout.storage().data()));
-    uint8_t *attenMaskDevice = nullptr;
-    if (is_causal) {
-        attenMaskDevice = static_cast<uint8_t *>(const_cast<void *>(mask_gpu_tensor.storage().data()));
-    }
-    auto softMaxLseDevice = static_cast<uint8_t *>(const_cast<void *>(softmax_lse.storage().data()));
-
-    auto workspaceDevice = static_cast<uint8_t *>(const_cast<void *>(workspace_tensor.storage().data()));
-    auto tilingDevice = static_cast<uint8_t *>(const_cast<void *>(tiling_gpu_tensor.storage().data()));
-    auto dqDevice = static_cast<uint8_t *>(const_cast<void *>(dq.storage().data()));
-    auto dkDevice = static_cast<uint8_t *>(const_cast<void *>(dk.storage().data()));
-    auto dvDevice = static_cast<uint8_t *>(const_cast<void *>(dv.storage().data()));
-
-    #if defined(ENABLE_ASCENDC_DUMP)
-        uint8_t *ptrDumpDevice{nullptr};
-        aclCheck(aclrtMalloc(reinterpret_cast<void **>(&ptrDumpDevice), ALL_DUMPSIZE, ACL_MEM_MALLOC_HUGE_FIRST));
-        if (is_bf16) {
-            FAG::FAG<bfloat16_t><<<blockDim, nullptr, aclStream>>>(
-                fftsAddr, qDevice, kDevice, vDevice, dOutDevice, nullptr, nullptr, nullptr, nullptr, nullptr,
-                attenMaskDevice, softMaxLseDevice, nullptr, outDevice, nullptr, nullptr, nullptr,
-                nullptr, nullptr, dqDevice, dkDevice, dvDevice, workspaceDevice, tilingDevice, ptrDumpDevice);
-        } else {
-            FAG::FAG<half><<<blockDim, nullptr, aclStream>>>(
-                fftsAddr, qDevice, kDevice, vDevice, dOutDevice, nullptr, nullptr, nullptr, nullptr, nullptr,
-                attenMaskDevice, softMaxLseDevice, nullptr, outDevice, nullptr, nullptr, nullptr,
-                nullptr, nullptr, dqDevice, dkDevice, dvDevice, workspaceDevice, tilingDevice, ptrDumpDevice);
-        }
-        aclCheck(aclrtSynchronizeStream(aclStream));
-        Adx::AdumpPrintWorkSpace(ptrDumpDevice, ALL_DUMPSIZE, aclStream, "device_fag");
-        aclCheck(aclrtFree(ptrDumpDevice));
-    #else
-        if (is_bf16) {
-            if (is_causal) {
-                FAG::FAG<bfloat16_t, MaskType::MASK_CAUSAL, InputLayout::BSND><<<blockDim, nullptr, aclStream>>>(
-                    fftsAddr, qDevice, kDevice, vDevice, dOutDevice, nullptr, nullptr, nullptr, nullptr, nullptr,
-                    attenMaskDevice, softMaxLseDevice, nullptr, outDevice, nullptr, nullptr, nullptr,
-                    nullptr, nullptr, dqDevice, dkDevice, dvDevice, workspaceDevice, tilingDevice, nullptr);
-            } else {
-                FAG::FAG<bfloat16_t, MaskType::NO_MASK, InputLayout::BSND><<<blockDim, nullptr, aclStream>>>(
-                    fftsAddr, qDevice, kDevice, vDevice, dOutDevice, nullptr, nullptr, nullptr, nullptr, nullptr,
-                    attenMaskDevice, softMaxLseDevice, nullptr, outDevice, nullptr, nullptr, nullptr,
-                    nullptr, nullptr, dqDevice, dkDevice, dvDevice, workspaceDevice, tilingDevice, nullptr);
-            }
-        } else {
-            if (is_causal) {
-                FAG::FAG<half, MaskType::MASK_CAUSAL, InputLayout::BSND><<<blockDim, nullptr, aclStream>>>(
-                    fftsAddr, qDevice, kDevice, vDevice, dOutDevice, nullptr, nullptr, nullptr, nullptr, nullptr,
-                    attenMaskDevice, softMaxLseDevice, nullptr, outDevice, nullptr, nullptr, nullptr,
-                    nullptr, nullptr, dqDevice, dkDevice, dvDevice, workspaceDevice, tilingDevice, nullptr);
-            } else {
-                FAG::FAG<half, MaskType::NO_MASK, InputLayout::BSND><<<blockDim, nullptr, aclStream>>>(
-                    fftsAddr, qDevice, kDevice, vDevice, dOutDevice, nullptr, nullptr, nullptr, nullptr, nullptr,
-                    attenMaskDevice, softMaxLseDevice, nullptr, outDevice, nullptr, nullptr, nullptr,
-                    nullptr, nullptr, dqDevice, dkDevice, dvDevice, workspaceDevice, tilingDevice, nullptr);
-            }
-        }
-    #endif
-    auto opts = q.options();
-    auto softmax_d = torch::empty({fagInfo.seqQShapeSize, nheads, qsizes[1]}, opts.dtype(at::kFloat));
-    return {dq, dk, dv, softmax_d};
+    float scale = softmax_scale > 0.f ? softmax_scale
+                                      : (1.0f / sqrt(static_cast<float>(qsizes[3])));
+    return launch_fag_general(
+        dout, q, k, v, out, softmax_lse, dq, dk, dv,
+        std::nullopt, std::nullopt,
+        qsizes[1], ksizes[1],
+        scale, is_causal, window_size_left, window_size_right, deterministic);
 }
 
 PYBIND11_MODULE(flash_attn_npu_2, m)

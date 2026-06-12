@@ -8,12 +8,12 @@
 #include "catlass/arch/cross_core_sync.hpp"
 #include "catlass/arch/resource.hpp"
 #include "catlass/catlass.hpp"
-#include "catlass/debug.hpp"
 #include "catlass/epilogue/block/block_epilogue.hpp"
 #include "fag_epilogue_pre.hpp"
 #include "fag_epilogue_sfmg.hpp"
 #include "fag_epilogue_op.hpp"
 #include "fag_epilogue_post.hpp"
+#include "kernel_common_fag.hpp"
 #include "catlass/epilogue/dispatch_policy.hpp"
 #include "catlass/gemm/block/block_mmad.hpp"
 #include "fag_mmad_cube1.hpp"
@@ -139,25 +139,22 @@ public:
     void operator()(Params const &params)
     {
 #ifdef __DAV_C220_CUBE__
-        AscendC::GlobalTensor<uint64_t> tilingData;
-        tilingData.SetGlobalBuffer((__gm__ uint64_t *)params.tiling_data);
-        AscendC::GlobalTensor<uint32_t> tilingDataU32;
-        tilingDataU32.SetGlobalBuffer((__gm__ uint32_t *)params.tiling_data);
+        __gm__ FAGv2TilingData *tilingData = reinterpret_cast<__gm__ FAGv2TilingData *>(params.tiling_data);
 
-        int64_t batch = tilingData.GetValue(TILING_B);
-        int64_t g = tilingData.GetValue(TILING_G);
-        int64_t nheads_k = tilingData.GetValue(TILING_N2);
+        int64_t batch = tilingData->batch;
+        int64_t g = tilingData->g;
+        int64_t nheads_k = tilingData->kvHeadNum;
         int64_t nheads = nheads_k * g;
-        int64_t headdim = tilingData.GetValue(TILING_D);
-        int64_t dqWorkSpaceOffset = tilingData.GetValue(TILING_DQ_WORKSPACE_OFFSET);
-        int64_t dkWorkSpaceOffset = tilingData.GetValue(TILING_DK_WORKSPACE_OFFSET);
-        int64_t dvWorkSpaceOffset = tilingData.GetValue(TILING_DV_WORKSPACE_OFFSET);
-        int64_t mm1WorkspaceOffset = tilingData.GetValue(TILING_MM1_WORKSPACE_OFFSET);
-        int64_t mm2WorkspaceOffset = tilingData.GetValue(TILING_MM2_WORKSPACE_OFFSET);
-        int64_t pWorkSpaceOffset = tilingData.GetValue(TILING_P_WORKSPACE_OFFSET);
-        int64_t dsWorkSpaceOffset = tilingData.GetValue(TILING_DS_WORKSPACE_OFFSET);
+        int64_t headdim = tilingData->qkHeadDim;
+        int64_t dqWorkSpaceOffset = tilingData->dqWorkSpaceOffset;
+        int64_t dkWorkSpaceOffset = tilingData->dkWorkSpaceOffset;
+        int64_t dvWorkSpaceOffset = tilingData->dvWorkSpaceOffset;
+        int64_t mm1WorkspaceOffset = tilingData->mm1WorkSpaceOffset;
+        int64_t mm2WorkspaceOffset = tilingData->mm2WorkSpaceOffset;
+        int64_t pWorkSpaceOffset = tilingData->pWorkSpaceOffset;
+        int64_t dsWorkSpaceOffset = tilingData->dsWorkSpaceOffset;
 
-        uint32_t coreNum = tilingDataU32.GetValue(TILING_CORE_NUM * CONST_2);
+        uint32_t coreNum = tilingData->coreNum;
         int64_t mixCoreNum = (coreNum + 1) / 2;
         uint32_t seq_q_len = 0;
         uint32_t seq_k_len = 0;
@@ -171,8 +168,8 @@ public:
             actucal_seq_q_addr = (__gm__ uint8_t *)((__gm__ int32_t *)params.cu_seq_qlen + 1);
             actucal_seq_k_addr = (__gm__ uint8_t *)((__gm__ int32_t *)params.cu_seq_kvlen + 1);
         } else {
-            seq_q_len = tilingData.GetValue(TILING_T1) / batch;
-            seq_k_len = tilingData.GetValue(TILING_T2) / batch;
+            seq_q_len = tilingData->t1 / batch;
+            seq_k_len = tilingData->t2 / batch;
         }
 
         CubeAddr<maskType, inputLayout> cubeAddr;
@@ -235,17 +232,14 @@ public:
 
 #ifdef __DAV_C220_VEC__
 
-        AscendC::GlobalTensor<uint64_t> tilingData;
-        tilingData.SetGlobalBuffer((__gm__ uint64_t *)params.tiling_data);
-        AscendC::GlobalTensor<uint32_t> tilingDataU32;
-        tilingDataU32.SetGlobalBuffer((__gm__ uint32_t *)params.tiling_data);
+        __gm__ FAGv2TilingData *tilingData = reinterpret_cast<__gm__ FAGv2TilingData *>(params.tiling_data);
 
-        int64_t batch = tilingData.GetValue(TILING_B);
-        int64_t g = tilingData.GetValue(TILING_G);
-        int64_t nheads_k = tilingData.GetValue(TILING_N2);
+        int64_t batch = tilingData->batch;
+        int64_t g = tilingData->g;
+        int64_t nheads_k = tilingData->kvHeadNum;
         int64_t nheads = nheads_k * g;
-        int64_t headdim = tilingData.GetValue(TILING_D); 
-        uint32_t coreNum = tilingDataU32.GetValue(TILING_CORE_NUM * CONST_2);
+        int64_t headdim = tilingData->qkHeadDim;
+        uint32_t coreNum = tilingData->coreNum;
         int64_t mixCoreNum = (coreNum + 1) / 2;
         
         uint32_t seq_q_len = 0;
@@ -257,13 +251,13 @@ public:
             actucal_seq_q_addr = (__gm__ uint8_t *)((__gm__ int32_t *)params.cu_seq_qlen + 1);
             actucal_seq_k_addr = (__gm__ uint8_t *)((__gm__ int32_t *)params.cu_seq_kvlen + 1);
         } else {
-            seq_q_len = tilingData.GetValue(TILING_T1) / batch;
-            seq_k_len = tilingData.GetValue(TILING_T2) / batch;
+            seq_q_len = tilingData->t1 / batch;
+            seq_k_len = tilingData->t2 / batch;
         }
 
         struct VecAddrInfo vecAddrInfo;
         AscendC::TPipe pipePre;
-        EpilogueFAGPre epilogueFagPre(resource, &pipePre, params.dq, params.dk, params.dv, params.workspace,
+        EpilogueFAGPre epilogueFagPre(resource, &pipePre, params.dq, params.dk, params.dv, nullptr, params.workspace,
             params.tiling_data);
         epilogueFagPre();
         pipePre.Destroy();
@@ -271,7 +265,7 @@ public:
         // vec SoftmaxGrad
         AscendC::TPipe pipeSoftmaxGrad;
         EpilogueFAGSfmg epilogueFagSfmg(resource, &pipeSoftmaxGrad, params.dout, params.out, actucal_seq_q_addr,
-            params.workspace, batch, params.tiling_data);
+            params.workspace, params.tiling_data);
         epilogueFagSfmg();
         pipeSoftmaxGrad.Destroy();
 
@@ -355,7 +349,7 @@ template <
     MaskType maskType = MaskType::NO_MASK,
     InputLayout inputLayout = InputLayout::TND>
 __global__ __aicore__
-void FAG(uint64_t fftsAddr,
+void FAGVarlenOpt(uint64_t fftsAddr,
         GM_ADDR q, GM_ADDR k, GM_ADDR v, GM_ADDR dout,
         GM_ADDR q_right, GM_ADDR k_right, 
         GM_ADDR pse_shift, GM_ADDR drop_mask, GM_ADDR padding_mask, 
@@ -367,6 +361,7 @@ void FAG(uint64_t fftsAddr,
 {
     // Set FFTS address
     AscendC::SetSyncBaseAddr(fftsAddr);
+    KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_MIX_AIC_1_2);
     
     #if defined(ENABLE_ASCENDC_DUMP)
         AscendC::InitDump(false, ptrDump, ALL_DUMPSIZE);
@@ -430,22 +425,19 @@ void FAG(uint64_t fftsAddr,
 
     // VEC_Pre ：dQ/dOut/dV的workspace清零
     using EpilogueAtlasA2FAGPre = Catlass::Epilogue::EpilogueAtlasA2FAGPre;
-    using EpilogueFAGPre = Catlass::Epilogue::Block::BlockEpilogue<EpilogueAtlasA2FAGPre, ElementVecDtype>;
+    using EpilogueFAGPre = Catlass::Epilogue::Block::BlockEpilogue<EpilogueAtlasA2FAGPre, ElementVecDtype, FAGv2TilingData>;
 
     // VEC_Sfmg ：计算 SoftmaxGrad(dOut, atten_in)
-    using EpilogueAtlasA2FAGSfmg = Catlass::Epilogue::EpilogueAtlasA2FAGSfmg;
-    using EpilogueFAGSfmg = Catlass::Epilogue::Block::BlockEpilogue<EpilogueAtlasA2FAGSfmg, ElementVecDtype,
-        std::integral_constant<InputLayout, inputLayout>>;
+    using EpilogueAtlasA2FAGSfmg = Catlass::Epilogue::EpilogueAtlasA2FAGSfmg<static_cast<uint32_t>(inputLayout)>;
+    using EpilogueFAGSfmg = Catlass::Epilogue::Block::BlockEpilogue<EpilogueAtlasA2FAGSfmg, ElementVecDtype, FAGv2TilingData>;
 
     // VEC_Op：计算S = Mask(Q*K^T)，并完成重计算 P = Softmax(S)，再计算dS = P * Sub(dP, Sfmg)
     using EpilogueAtlasA2FAGOp = Catlass::Epilogue::EpilogueAtlasA2FAGOp;
-    using EpilogueFAGOp = Catlass::Epilogue::Block::BlockEpilogue<EpilogueAtlasA2FAGOp, ElementVecDtype,
-        std::integral_constant<InputLayout, inputLayout>>;
+    using EpilogueFAGOp = Catlass::Epilogue::Block::BlockEpilogue<EpilogueAtlasA2FAGOp, ElementVecDtype, std::integral_constant<InputLayout, inputLayout>, FAGv2TilingData>;
 
     // VEC_Post：dQ*scale和dK*scale，并搬运输出dQ/dK/dV
     using EpilogueAtlasA2FAGPost = Catlass::Epilogue::EpilogueAtlasA2FAGPost;
-    using EpilogueFAGPost = Catlass::Epilogue::Block::BlockEpilogue<EpilogueAtlasA2FAGPost, ElementVecDtype>;
-
+    using EpilogueFAGPost = Catlass::Epilogue::Block::BlockEpilogue<EpilogueAtlasA2FAGPost, ElementVecDtype, FAGv2TilingData>;
 
     // Kernel level
     using FAGKernel = FAGKernel<BlockMmadFAGCube1, BlockMmadFAGCube2, BlockMmadFAGCube3, EpilogueFAGPre,
