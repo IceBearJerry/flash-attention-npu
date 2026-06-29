@@ -140,40 +140,67 @@ def ref_flash_attention(
     return go.to(data_type), lse
 
 test_cases = [
-    # (data_type, batch_size, num_heads, kv_heads, q_seqlen, kv_seqlen, head_size, cache_mode, block_size, is_causal, layout)
-    (torch.bfloat16, 1, 1, 1, 1024, 1024, 128, 1, 128, False, "TND"),
-    (torch.bfloat16, 5, 4, 4, 1024, 1024, 128, 1, 128, True, "TND"),
-    (torch.float16, 7, 1, 1, 512, 512, 128, 1, 128, False, "TND"),
-    (torch.bfloat16, 1, 1, 1, 1024, 1024, 128, 1, 128, False, "BSND"),
-    (torch.bfloat16, 2, 1, 1, 1024, 1024, 128, 1, 128, False, "BSND"),
-    (torch.bfloat16, 2, 1, 1, 1024, 1024, 128, 1, 128, False, "TND"),
-    (torch.bfloat16, 5, 4, 4, 1024, 1024, 128, 1, 128, True, "BSND"),
-    (torch.bfloat16, 5, 4, 4, 1024, 1024, 128, 1, 128, True, "TND"),
-    (torch.bfloat16, 1, 1, 1, 1, 1024, 128, 1, 128, True, "TND"),
-    (torch.bfloat16, 1, 1, 1, 1, 1024, 128, 1, 128, False, "TND"),
-    (torch.bfloat16, 1, 1, 1, 1, 1024, 128, 1, 128, True, "BSND"),
-    (torch.bfloat16, 1, 1, 1, 1, 1024, 128, 1, 128, False, "BSND"),
+    # (data_type, batch_size, num_heads, kv_heads, q_seqlen, kv_seqlen, head_size, cache_mode,
+    #  block_size, is_causal, layout, is_varied)
+    (torch.bfloat16, 2, 6, 2, 2, 1024, 128, 1, 128, False, "BSND", False),
+    (torch.bfloat16, 1, 1, 1, 1024, 1024, 128, 1, 128, False, "TND", False),
+    (torch.bfloat16, 5, 4, 4, 1024, 1024, 128, 1, 128, True, "TND", False),
+    (torch.float16, 7, 1, 1, 512, 512, 128, 1, 128, False, "TND", False),
+    (torch.bfloat16, 1, 1, 1, 1024, 1024, 128, 1, 128, False, "BSND", False),
+    (torch.bfloat16, 2, 1, 1, 1024, 1024, 128, 1, 128, False, "BSND", False),
+    (torch.bfloat16, 2, 1, 1, 1024, 1024, 128, 1, 128, False, "TND", False),
+    (torch.bfloat16, 5, 4, 4, 1024, 1024, 128, 1, 128, True, "BSND", False),
+    (torch.bfloat16, 5, 4, 4, 1024, 1024, 128, 1, 128, True, "TND", False),
+    (torch.bfloat16, 1, 1, 1, 1, 1024, 128, 1, 128, True, "TND", False),
+    (torch.bfloat16, 1, 1, 1, 1, 1024, 128, 1, 128, False, "TND", False),
+    (torch.bfloat16, 1, 1, 1, 1, 1024, 128, 1, 128, True, "BSND", False),
+    (torch.bfloat16, 1, 1, 1, 1, 1024, 128, 1, 128, False, "BSND", False),
     # kv=4096 -> 8 S2 blocks: num_splits=2 -> 2 segs (4 blk each), num_splits=4 -> 4 segs (2 blk each).
-    (torch.bfloat16, 1, 1, 1, 1, 4096, 128, 1, 128, False, "TND"),
-    (torch.bfloat16, 2, 1, 1, 1, 2048, 128, 1, 128, False, "TND"),
+    (torch.bfloat16, 1, 1, 1, 1, 4096, 128, 1, 128, False, "TND", False),
+    (torch.bfloat16, 2, 1, 1, 1, 2048, 128, 1, 128, False, "TND", False),
+    (torch.float16, 2, 2, 1, 128, 128, 128, 1, 128, True, "TND", False),
+    (torch.bfloat16, 2, 6, 2, 2, 1024, 128, 1, 128, True, "TND", False),
+    # Varied-length (per-batch q in [1,q_seqlen], kv in [q,kv_seqlen]) under TND+paged.
+    # Drives a NON-uniform prevQSeqlenSum prefix -> stresses the TND LSE qPos/batchBase
+    # addressing and the FD CombineScale multi-segment reduce with uneven per-batch q/kv.
+    # is_varied is only meaningful under TND (BSND has no per-batch q length); guarded below.
+    (torch.bfloat16, 2, 1, 1, 16, 1024, 128, 1, 128, False, "TND", True),
+    (torch.bfloat16, 2, 6, 2, 16, 1024, 128, 1, 128, False, "TND", True),
+    (torch.bfloat16, 2, 6, 2, 16, 1024, 128, 1, 128, True, "TND", True),
+    (torch.bfloat16, 1, 64, 1, 2, 1024, 256, 1, 128, False, "TND", False),
+    (torch.bfloat16, 2, 1, 1, 16, 1024, 256, 1, 128, True, "TND", False),
+    (torch.bfloat16, 2, 1, 1, 16, 10240, 128, 1, 128, False, "TND", False),
+    (torch.bfloat16, 2, 6, 2, 16, 10240, 128, 1, 128, False, "TND", False),
+    (torch.bfloat16, 6, 1, 1, 16, 10240, 128, 1, 128, False, "TND", False),
 ]
 
-@pytest.mark.parametrize("num_splits", [0, 1, 2])
-@pytest.mark.parametrize("data_type, batch_size, num_heads, kv_heads, q_seqlen, kv_seqlen, head_size, cache_mode, block_size, is_causal, layout", test_cases)
-def test_fa_custom_ops(data_type, batch_size, num_heads, kv_heads, q_seqlen, kv_seqlen, head_size, cache_mode, block_size, is_causal, layout, num_splits):
+@pytest.mark.parametrize("num_splits", [0, 1, 2, 4, 8])
+@pytest.mark.parametrize("data_type, batch_size, num_heads, kv_heads, q_seqlen, kv_seqlen, head_size, cache_mode, block_size, is_causal, layout, is_varied", test_cases)
+def test_fa_custom_ops(data_type, batch_size, num_heads, kv_heads, q_seqlen, kv_seqlen, head_size, cache_mode, block_size, is_causal, layout, is_varied, num_splits):
     # num_splits>1 (active KV split) is currently only wired for paged KV + varlen-q (TND).
     if num_splits > 1 and not (cache_mode == 1 and layout == "TND"):
         pytest.skip("num_splits>1 requires paged KV cache and TND (varlen-q) layout")
+    # Varied per-batch q length is only expressible under TND (cu_seqlens_q); BSND assumes a
+    # uniform q_seqlen, so a varied case there is meaningless.
+    if is_varied and layout != "TND":
+        pytest.skip("is_varied requires TND (varlen-q) layout")
     q_min_range = -1.0
     q_max_range = 1.0
     kv_min_range = -1.0
     kv_max_range = 1.0
     block_size = 128
-    num_blocks = 64
-    # q_sequences = torch.randint(low=1, high=q_seqlen+1, size=(batch_size,)).tolist()
-    # kv_sequences = torch.randint(low=max(q_sequences), high=kv_seqlen+1, size=(batch_size,)).tolist()
-    q_sequences = [q_seqlen] * batch_size
-    kv_sequences = [kv_seqlen] * batch_size
+    max_num_blocks_per_seq = (kv_seqlen + block_size - 1) // block_size
+    num_blocks = max(64, max_num_blocks_per_seq * batch_size)
+    if is_varied:
+        # Per-batch q in [1, q_seqlen], kv in [q, kv_seqlen] (kv>=q so q>kv never occurs).
+        # Seeded for reproducibility; does not perturb the query/key/value RNG streams above.
+        gen = torch.Generator().manual_seed(1234)
+        q_sequences = torch.randint(low=1, high=q_seqlen + 1, size=(batch_size,), generator=gen).tolist()
+        kv_sequences = [int(torch.randint(low=q, high=kv_seqlen + 1, size=(1,), generator=gen))
+                        for q in q_sequences]
+    else:
+        q_sequences = [q_seqlen] * batch_size
+        kv_sequences = [kv_seqlen] * batch_size
     t_q_sum = sum(q_sequences)
     t_kv_sum = sum(kv_sequences)
     if layout == "BSND":
@@ -186,7 +213,6 @@ def test_fa_custom_ops(data_type, batch_size, num_heads, kv_heads, q_seqlen, kv_
     if cache_mode == 1:
         key_cache = (kv_min_range + (kv_max_range - kv_min_range) * torch.rand(num_blocks, block_size, kv_heads, head_size)).to(data_type).npu()
         value_cache = (kv_min_range + (kv_max_range - kv_min_range) * torch.rand(num_blocks, block_size, kv_heads, head_size)).to(data_type).npu()
-        max_num_blocks_per_seq = (kv_seqlen + block_size - 1) // block_size
         for i in range(batch_size):
             block_table = [
                 max_num_blocks_per_seq * i + j
@@ -271,10 +297,10 @@ def test_fa_custom_ops(data_type, batch_size, num_heads, kv_heads, q_seqlen, kv_
     golden_out = None
     if layout == "BSND":
         golden_out = torch.empty((batch_size, q_seqlen, num_heads, head_size), dtype=data_type)
-        golden_lseL = torch.empty((batch_size, q_seqlen, num_heads), dtype=torch.float32)
+        golden_lseL = torch.empty((batch_size, num_heads, q_seqlen), dtype=torch.float32)
     else:
         golden_out = torch.empty((t_q_sum, num_heads, head_size), dtype=data_type)
-        golden_lseL = torch.empty((t_q_sum, num_heads), dtype=torch.float32)
+        golden_lseL = torch.empty((num_heads, t_q_sum), dtype=torch.float32)
     for i in range(batch_size):
         q_seqlen_per_batch = q_seqlen_list[i]
         kv_seqlen_per_batch = kv_seqlen_list[i]
@@ -331,12 +357,18 @@ def test_fa_custom_ops(data_type, batch_size, num_heads, kv_heads, q_seqlen, kv_
         out = output.reshape(q_seqlen_per_batch, num_heads, head_size)
         if layout == "BSND":
             golden_out[i:i+1] = out
-            golden_lseL[i:i+1] = torch.transpose(golden_lse.reshape(num_heads, q_seqlen_per_batch), 0, 1)
+            golden_lseL[i:i+1] = golden_lse.reshape(1, num_heads, q_seqlen_per_batch)
         else:
             golden_out[new_q_seqlen_list[i] : new_q_seqlen_list[i + 1]] = out
-            golden_lseL[new_q_seqlen_list[i] : new_q_seqlen_list[i + 1]] = torch.transpose(golden_lse.reshape(num_heads, q_seqlen_per_batch), 0, 1)
+            golden_lseL[:, new_q_seqlen_list[i] : new_q_seqlen_list[i + 1]] = golden_lse.reshape(num_heads, q_seqlen_per_batch)
     rtol = 1e-2
     atol = 1e-2
+    print("=======================================")
+    print(softmax_lse.shape)
+    print(softmax_lse)
+    print("=======================================")
+    print(golden_lseL.shape)
+    print(golden_lseL)
     torch.testing.assert_close(out_out.cpu(), golden_out.cpu(), rtol=rtol, atol=atol)
     torch.testing.assert_close(softmax_lse.cpu(), golden_lseL.cpu(), rtol=rtol, atol=atol)
 
@@ -386,7 +418,7 @@ def test_fa_fwd_custom_ops(data_type, batch_size, num_heads, kv_heads, q_seqlen,
         out_out, softmax_lse = ret
 
     golden_out = torch.empty((batch_size, q_seqlen, num_heads, head_size), dtype=data_type)
-    golden_lseL = torch.empty((batch_size, q_seqlen, num_heads), dtype=torch.float32)
+    golden_lseL = torch.empty((batch_size, num_heads, q_seqlen), dtype=torch.float32)
     atten_mask = None
     if is_causal:
         atten_mask = torch.triu(torch.ones(q_seqlen, kv_seqlen), diagonal=1).bool()
@@ -400,7 +432,7 @@ def test_fa_fwd_custom_ops(data_type, batch_size, num_heads, kv_heads, q_seqlen,
             output, golden_lse = ref_flash_attention(query_cpu, key_cache_per_batch, value_cache_per_batch, scale, None, data_type)
         out = output.reshape(q_seqlen, num_heads, head_size)
         golden_out[i:i+1] = out
-        golden_lseL[i:i+1] = torch.transpose(golden_lse.reshape(num_heads, q_seqlen), 0, 1)
+        golden_lseL[i:i+1] = golden_lse.reshape(num_heads, q_seqlen)
     rtol = 1e-2
     atol = 1e-2
     torch.testing.assert_close(out_out.cpu(), golden_out.cpu(), rtol=rtol, atol=atol)
@@ -438,7 +470,7 @@ def test_fa_varlen_ops(data_type, batch_size, num_heads, kv_heads, q_seqlen, kv_
     window_size_right = -1
     softcap = 0.0
 
-    output_npu = flash_attn_varlen_func(
+    output_npu, softmax_lse = flash_attn_varlen_func(
         query,
         key,
         value,
@@ -450,9 +482,10 @@ def test_fa_varlen_ops(data_type, batch_size, num_heads, kv_heads, q_seqlen, kv_
         causal=is_causal,
         window_size=(window_size_left, window_size_right),
         softcap=softcap,
+        return_attn_probs=True,
     )
     golden_out = torch.empty((batch_size * q_seqlen, num_heads, head_size), dtype=data_type)
-    golden_lseL = torch.empty((batch_size * q_seqlen, num_heads), dtype=torch.float32)
+    golden_lseL = torch.empty((num_heads, batch_size * q_seqlen), dtype=torch.float32)
     atten_mask = None
     if is_causal:
         atten_mask = (torch.triu(torch.ones(q_seqlen, kv_seqlen), diagonal=kv_seqlen - q_seqlen + 1)).to(torch.bool)
@@ -466,7 +499,8 @@ def test_fa_varlen_ops(data_type, batch_size, num_heads, kv_heads, q_seqlen, kv_
             output, golden_lse = ref_flash_attention(query_cpu, key_per_batch, value_per_batch, scale, None, data_type)
         out = output.reshape(q_seqlen, num_heads, head_size)
         golden_out[(i - 1) * q_seqlen : i * q_seqlen] = out
-        golden_lseL[(i - 1) * q_seqlen : i * q_seqlen] = torch.transpose(golden_lse.reshape(num_heads, q_seqlen), 0, 1)
+        golden_lseL[:, (i - 1) * q_seqlen : i * q_seqlen] = golden_lse.reshape(num_heads, q_seqlen)
     rtol = 1e-2
     atol = 1e-2
     torch.testing.assert_close(output_npu.cpu(), golden_out.cpu(), rtol=rtol, atol=atol)
+    torch.testing.assert_close(softmax_lse.cpu(), golden_lseL.cpu(), rtol=rtol, atol=atol)

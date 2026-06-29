@@ -85,7 +85,8 @@ public:
         bool inputLayoutTND = true,
         uint32_t maxQSeqlen = 0,
         bool outputLse = false,
-        AscendC::GlobalTensor<ElementLse> oLseGmTensor = AscendC::GlobalTensor<ElementLse>()
+        AscendC::GlobalTensor<ElementLse> oLseGmTensor = AscendC::GlobalTensor<ElementLse>(),
+        uint32_t totalQTokens = 0
     ) {
         AscendC::SetAtomicNone();
         AscendC::SetMaskNorm();
@@ -193,25 +194,36 @@ public:
             AscendC::PipeBarrier<PIPE_V>();
 
             if (outputLse) {
-                uint32_t baseGmOffsetLse =
-                    prevQSeqlenSum * qHeads + qStartIndx * qHeads + headStartIndx;
-                uint32_t gmLseScalar = 0;
-                if (q_len == 1) {
-                    gmLseScalar = (vectorsubBlockID == 0) ? baseGmOffsetLse
-                                                          : baseGmOffsetLse + sum_former;
+                uint32_t headStride = inputLayoutTND ? totalQTokens : maxQSeqlen;
+                uint32_t headBase = headStartIndx;
+                uint32_t qPos;
+                uint32_t batchBase;
+                if (inputLayoutTND) {
+                    qPos = prevQSeqlenSum + qStartIndx;   // global token; batch folded in
+                    batchBase = 0;
                 } else {
-                    uint32_t q_half = q_len / 2;
-                    gmLseScalar = (vectorsubBlockID == 0) ? baseGmOffsetLse
-                                                          : baseGmOffsetLse + q_half * qHeads;
+                    qPos = qStartIndx;                    // within-batch token
+                    batchBase = prevQSeqlenSum * qHeads;  // batch * num_heads * seqlen_q
                 }
+                if (q_len == 1) {
+                    if (vectorsubBlockID != 0) {
+                        headBase = headStartIndx + sum_former;
+                    }
+                } else {
+                    if (vectorsubBlockID != 0) {
+                        qPos += (q_len / 2);
+                    }
+                }
+                uint32_t gmLseBase = batchBase + headBase * headStride + qPos;
+                uint32_t lseDstStride = (headStride - 1) * sizeof(float);
 
                 if (q_len == 1) {
                     AscendC::SetFlag<AscendC::HardEvent::V_MTE3>(EVENT_ID3);
                     AscendC::WaitFlag<AscendC::HardEvent::V_MTE3>(EVENT_ID3);
 
                     AscendC::DataCopyPad(
-                        oLseGmTensor[gmLseScalar], tsUbTensor,
-                        AscendC::DataCopyExtParams(1, lseBlock * sizeof(float), 0, 0, 0));
+                        oLseGmTensor[gmLseBase], tsUbTensor,
+                        AscendC::DataCopyExtParams(lseBlock, sizeof(float), 0, lseDstStride, 0));
                 } else {
                     AscendC::Brcb(loFloatUbTensor.ReinterpretCast<uint32_t>(),
                                   tsUbTensor.ReinterpretCast<uint32_t>(),
@@ -225,9 +237,9 @@ public:
                     uint32_t qTile = lseBlock / n_len;
                     for (uint32_t qi = 0; qi < qTile; ++qi) {
                         AscendC::DataCopyPad(
-                            oLseGmTensor[gmLseScalar + qi * qHeads],
+                            oLseGmTensor[gmLseBase + qi],
                             loFloatUbTensor[qi * n_len * FLOAT_PER_BLOCK],
-                            AscendC::DataCopyExtParams(n_len, sizeof(float), 0, 0, 0));
+                            AscendC::DataCopyExtParams(n_len, sizeof(float), 0, lseDstStride, 0));
                     }
                 }
 

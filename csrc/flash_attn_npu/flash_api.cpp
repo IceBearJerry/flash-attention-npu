@@ -524,7 +524,8 @@ mha_fwd_kvcache(at::Tensor &q,                 // batch_size x seqlen_q x num_he
         + UpdateSize + splitLseTotalSize + splitOTotalSize);
 
     at::Tensor workspace_tensor = at::empty({workSpaceSize}, at::device(at::kPrivateUse1).dtype(at::kByte));
-    at::Tensor softmaxlse = at::empty({batch_size, seqlen_q, num_heads}, at::device(at::kPrivateUse1).dtype(at::kFloat));
+    // LSE output is head-major BNS: {batch, num_heads, seqlen_q} (matches v3).
+    at::Tensor softmaxlse = at::empty({batch_size, num_heads, seqlen_q}, at::device(at::kPrivateUse1).dtype(at::kFloat));
     softmaxlse.fill_(std::numeric_limits<float>::infinity());
 
     tiling_cpu_ptr->set_mm1OutSize(mm1OutSize);
@@ -698,10 +699,10 @@ mha_fwd(at::Tensor &q,                            // batch_size x seqlen_q x num
         maskDevice = static_cast<uint8_t *>(const_cast<void *>(mask_gpu_tensor.data_ptr()));
     }
 
-    // init softmax lse
-    at::Tensor softmaxlse = at::empty({batch_size, seqlen_q, num_heads},
+    // init softmax lse — head-major BNS: {batch, num_heads, seqlen_q} (matches v3).
+    at::Tensor softmaxlse = at::empty({batch_size, num_heads, seqlen_q},
         at::device(at::kPrivateUse1).dtype(at::kFloat));
-    softmaxlse.fill_(std::numeric_limits<float>::infinity()); 
+    softmaxlse.fill_(std::numeric_limits<float>::infinity());
     auto softmaxLseDevice = static_cast<uint8_t *>(const_cast<void *>(softmaxlse.data_ptr()));
 
     // ffts related
@@ -930,7 +931,8 @@ mha_varlen_fwd(at::Tensor &q,  // total_q x num_heads x head_size, total_q := \s
 
     at::Tensor workspace_tensor = at::empty({workSpaceSize},
         at::device(at::kPrivateUse1).dtype(at::kByte));
-    at::Tensor softmaxlse = at::empty({T, num_heads}, at::device(at::kPrivateUse1).dtype(at::kFloat)); // lse
+    // LSE output is head-major NT: {num_heads, T} (matches v3).
+    at::Tensor softmaxlse = at::empty({num_heads, T}, at::device(at::kPrivateUse1).dtype(at::kFloat)); // lse
     softmaxlse.fill_(std::numeric_limits<float>::infinity()); 
 
     tiling_cpu_ptr->set_mm1OutSize(mm1OutSize);

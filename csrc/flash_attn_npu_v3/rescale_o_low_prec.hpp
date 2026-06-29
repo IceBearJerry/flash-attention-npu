@@ -171,7 +171,7 @@ public:
         uint32_t curRowNumRound = RoundUp(curRowNum, HALF_BLOCK_SIZE);
         uint32_t qSBlockSize = layoutOutput.shape(0);
         uint32_t oHiddenSize = layoutOutput.shape(1);
-        uint32_t qHeads = layoutLse.shape(1);
+        uint32_t qHeads = layoutLse.shape(0);
         uint32_t dmUbOffsetCurStackTile = curStackTileMod * MAX_ROW_NUM_SUB_CORE + rowOffsetLoop;
 
         if (!isFirstStackTile) {
@@ -317,14 +317,14 @@ public:
                         AscendC::DataCopyPad(
                             gLse, tvUbTensor32,
                             AscendC::DataCopyExtParams(
-                                totalRowNum, sizeof(float), 0, (qHeads - 1) * sizeof(float), 0));
+                                totalRowNum, sizeof(float), 0, 0, 0));
                     } else {
                         for (uint32_t qNIdx = 0; qNIdx < qNThisSubBlock; qNIdx++) {
                             AscendC::DataCopyPad(
-                                gLse[qNIdx],
+                                gLse[qNIdx * layoutLse.stride(0)],
                                 tvUbTensor32[qNIdx * qSBlockSize * FLOAT_BLOCK_SIZE],
                                 AscendC::DataCopyExtParams(
-                                    qSBlockSize, sizeof(float), 0, (qHeads - 1) * sizeof(float), 0));
+                                    qSBlockSize, sizeof(float), 0, 0, 0));
                         }
                     }
                     AscendC::SetFlag<AscendC::HardEvent::MTE3_V>(EVENT_ID4);
@@ -375,10 +375,11 @@ public:
         int64_t outOffsetSubBlock =
             layoutOutput.GetOffset(MatrixCoord(outRowOffsetThisSubBlock, outColOffsetThisSubBlock));
 
+        // BNS布局: row = heads, col = sequence
         uint32_t outLseRowOffsetThisSubBlock = (qNBlockSize == 1U) ?
-            inRowOffsetThisSubBlock : 0;
+            0 : subBlockIdx * qNSplitSubBlock;  // row = heads
         uint32_t outLseColOffsetThisSubBlock = (qNBlockSize == 1U) ?
-            0 : subBlockIdx * qNSplitSubBlock;
+            inRowOffsetThisSubBlock : 0;  // col = sequence
         int64_t offsetLse =
             layoutLse.GetOffset(MatrixCoord(outLseRowOffsetThisSubBlock, outLseColOffsetThisSubBlock));
         auto gLseThisSubBlock = gLse[offsetLse];

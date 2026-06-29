@@ -418,7 +418,8 @@ namespace SplitFuse {
                     INPUT_LAYOUT == FaiKenel::inputLayout::TND,
                     maxQSeqlen,
                     (LSE_MODE == Epilogue::LseModeT::OUT_ONLY),
-                    gLse
+                    gLse,
+                    totalQTokens
                 );
 #endif
             }
@@ -487,7 +488,19 @@ namespace SplitFuse {
                 blockBOffset = static_cast<uint64_t>(BIdx) * static_cast<uint64_t>(maxNumBlocksPerBatch);
             }
             uint64_t oBOffset = static_cast<uint64_t>(prevQSeqlenSum) * strideO;
-            uint64_t lseBOffset = static_cast<uint64_t>(prevQSeqlenSum) * qHeads;
+            // LSE output is head-major (BNS for BSND, NT for TND). The batch base and the
+            // per-head stride depend on layout:
+            //   TND  -> {num_heads, total_q}:  batch folded into global token, head stride = totalQTokens
+            //   BSND -> {batch, num_heads, seqlen_q}: batch base = prevQSeqlenSum*qHeads, head stride = maxQSeqlen
+            uint64_t lseBOffset;
+            uint32_t lseHeadStride;
+            if constexpr (INPUT_LAYOUT == FaiKenel::inputLayout::TND) {
+                lseBOffset = static_cast<uint64_t>(prevQSeqlenSum);
+                lseHeadStride = totalQTokens;
+            } else {
+                lseBOffset = static_cast<uint64_t>(prevQSeqlenSum) * qHeads;
+                lseHeadStride = maxQSeqlen;
+            }
 
             uint32_t curQNBlockTile = GetQNBlockTile(qSeqlen, groupSize);
             uint32_t qNBlockNumPerGroup = CeilDiv(groupSize, curQNBlockTile);
@@ -498,7 +511,7 @@ namespace SplitFuse {
             uint32_t qNBlockIdxCurGroup = qNBlockIdx % qNBlockNumPerGroup;
             uint32_t kvNIdx = qNBlockIdx / qNBlockNumPerGroup;
             uint32_t qNStartIdx = kvNIdx * groupSize + qNBlockIdxCurGroup * curQNBlockTile;
-            uint32_t lseTokenOffset = qSBlockIdx * curQSBlockTile * qHeads;
+            uint32_t lseTokenOffset = qSBlockIdx * curQSBlockTile;
 
             uint64_t gmOffsetQ = qBOffset +
                 static_cast<uint64_t>(qSBlockIdx * curQSBlockTile) * strideQ +
@@ -508,8 +521,10 @@ namespace SplitFuse {
             uint64_t gmOffsetO = oBOffset +
                 static_cast<uint64_t>(qSBlockIdx * curQSBlockTile) * strideO +
                 static_cast<uint64_t>(qNStartIdx * embedV);
+            // head-major: base + head*headStride + qToken
             uint64_t gmOffsetLse = lseBOffset +
-                static_cast<uint64_t>(lseTokenOffset + qNStartIdx);
+                static_cast<uint64_t>(qNStartIdx) * lseHeadStride +
+                static_cast<uint64_t>(lseTokenOffset);
 
             uint32_t qSBlockSize = (qSBlockIdx == (curQSBlockNum - 1U)) ?
                 (qSeqlen - qSBlockIdx * curQSBlockTile) : curQSBlockTile;
@@ -766,7 +781,11 @@ namespace SplitFuse {
 #ifdef __DAV_C220_VEC__
                     LayoutO layoutO(qSeqlen, embed * qHeads);
                     LayoutUpdate layoutUpdate(rowNum, embed, embedRound);
-                    LayoutLse layoutLse(totalQTokens, qHeads);
+                    // Head-major LSE: (num_heads, headStride). stride(0)=headStride is
+                    // maxQSeqlen (BSND) or totalQTokens (TND) — the correct per-layout head
+                    // stride, so rescale_o.hpp's gLse[qNIdx * layoutLse.stride(0)] lands right.
+                    LayoutLse layoutLse(qHeads,
+                        (INPUT_LAYOUT == FaiKenel::inputLayout::TND) ? totalQTokens : maxQSeqlen);
                     uint64_t gmOffsetUpdate = (uint64_t)(coreIdx * WORKSPACE_BLOCK_SIZE_DB);
                     Arch::CrossCoreWaitFlag(pvReady);
 

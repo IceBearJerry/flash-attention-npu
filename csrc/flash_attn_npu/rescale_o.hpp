@@ -218,7 +218,7 @@ public:
         uint32_t curRowNumRound = RoundUp(curRowNum, FLOAT_BLOCK_SIZE);
         uint32_t qSBlockSize = layoutOutput.shape(0);
         uint32_t oHiddenSize = layoutOutput.shape(1);
-        uint32_t qHeads = layoutLse.shape(1);
+        uint32_t qHeads = layoutLse.shape(0);
         uint32_t dmUbOffsetCurStackTile = curStackTileMod * MAX_ROW_NUM_SUB_CORE + rowOffsetLoop;
 
         // FD: read partial-O / partial-LSE hidden dims from splitParams layouts.
@@ -408,7 +408,7 @@ public:
                             AscendC::DataCopyPad(
                                 gLse, tvUbTensor,
                                 AscendC::DataCopyExtParams(
-                                    totalRowNum, sizeof(float), 0, (qHeads - 1) * sizeof(float), 0));
+                                    totalRowNum, sizeof(float), 0, 0, 0));
                         }
                     } else {
                         for (uint32_t qNIdx = 0; qNIdx < qNThisSubBlock; qNIdx++) {
@@ -420,10 +420,10 @@ public:
                                         qSBlockSize, sizeof(float), 0, (qHeads_gmlse - 1) * sizeof(float), 0));
                             } else {
                                 AscendC::DataCopyPad(
-                                    gLse[qNIdx],
+                                    gLse[qNIdx * layoutLse.stride(0)],
                                     tvUbTensor[qNIdx * qSBlockSize * FLOAT_BLOCK_SIZE],
                                     AscendC::DataCopyExtParams(
-                                        qSBlockSize, sizeof(float), 0, (qHeads - 1) * sizeof(float), 0));
+                                        qSBlockSize, sizeof(float), 0, 0, 0));
                             }
                         }
                     }
@@ -531,9 +531,9 @@ public:
         }
 
         uint32_t outLseRowOffsetThisSubBlock = (qNBlockSize == 1U) ?
-            inRowOffsetThisSubBlock : 0;
+            0 : subBlockIdx * qNSplitSubBlock;  // row = heads
         uint32_t outLseColOffsetThisSubBlock = (qNBlockSize == 1U) ?
-            0 : subBlockIdx * qNSplitSubBlock;
+            inRowOffsetThisSubBlock : 0;  // col = sequence
         int64_t offsetLse =
             layoutLse.GetOffset(MatrixCoord(outLseRowOffsetThisSubBlock, outLseColOffsetThisSubBlock));
         auto gLseThisSubBlock = gLse[offsetLse];
@@ -542,6 +542,8 @@ public:
         // FD: resolve per-subblock offset into the partial LSE buffer (gCombineLse).
         int64_t gmLseoffsetLse = 0;
         if (splitParams.isSplitkv) {
+            outLseRowOffsetThisSubBlock = (qNBlockSize == 1U) ? inRowOffsetThisSubBlock : 0;
+            outLseColOffsetThisSubBlock = (qNBlockSize == 1U) ? 0 : subBlockIdx * qNSplitSubBlock;
             gmLseoffsetLse =
                 splitParams.layoutgmLse->GetOffset(MatrixCoord(outLseRowOffsetThisSubBlock, outLseColOffsetThisSubBlock));
         }
