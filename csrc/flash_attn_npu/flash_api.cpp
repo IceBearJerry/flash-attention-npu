@@ -1172,9 +1172,8 @@ mha_varlen_bwd(const at::Tensor &dout,                   // total_q x num_heads 
     // alloc custom attn_mask
     at::Tensor mask_gpu_tensor;
     if (is_causal) {
-        at::Tensor mask_cpu_tensor = at::empty({2048, 2048}, at::device(c10::kCPU).dtype(at::kByte));
-        mask_cpu_tensor = at::triu(at::ones_like(mask_cpu_tensor), 1);
-        mask_gpu_tensor = mask_cpu_tensor.to(at::Device(at::kPrivateUse1));
+        mask_gpu_tensor = at::empty({2048, 2048}, at::device(at::kPrivateUse1).dtype(at::kByte));
+        mask_gpu_tensor = at::triu(at::ones_like(mask_gpu_tensor), 1);
     }
     at::Tensor seqlenq_gpu_tensor = seqlens_q.to(at::Device(at::kPrivateUse1));
     at::Tensor seqlenk_gpu_tensor = seqlens_k.to(at::Device(at::kPrivateUse1));
@@ -1201,51 +1200,56 @@ mha_varlen_bwd(const at::Tensor &dout,                   // total_q x num_heads 
     auto dkDevice = static_cast<uint8_t *>(const_cast<void *>(dk.storage().data()));
     auto dvDevice = static_cast<uint8_t *>(const_cast<void *>(dv.storage().data()));
 
-    #if defined(ENABLE_ASCENDC_DUMP)
+    auto fag_varlen_opt_call = [=]() -> int {
+        #if defined(ENABLE_ASCENDC_DUMP)
 
-        uint8_t *ptrDumpDevice{nullptr};
-        aclCheck(aclrtMalloc(reinterpret_cast<void **>(&ptrDumpDevice), ALL_DUMPSIZE, ACL_MEM_MALLOC_HUGE_FIRST));
-        if (is_bf16) {
-            FAG::FAGVarlenOpt<bfloat16_t><<<blockDim, nullptr, aclStream>>>(
-                fftsAddr, qDevice, kDevice, vDevice, dOutDevice, nullptr, nullptr, nullptr, nullptr, nullptr,
-                attenMaskDevice, softMaxLseDevice, nullptr, outDevice, nullptr, cuSeqQlenDevice, cuSeqKvlenDevice,
-                nullptr, nullptr, dqDevice, dkDevice, dvDevice, workspaceDevice, tilingDevice, ptrDumpDevice);
-        } else {
-            FAG::FAGVarlenOpt<half><<<blockDim, nullptr, aclStream>>>(
-                fftsAddr, qDevice, kDevice, vDevice, dOutDevice, nullptr, nullptr, nullptr, nullptr, nullptr,
-                attenMaskDevice, softMaxLseDevice, nullptr, outDevice, nullptr, cuSeqQlenDevice, cuSeqKvlenDevice,
-                nullptr, nullptr, dqDevice, dkDevice, dvDevice, workspaceDevice, tilingDevice, ptrDumpDevice);
-        }
-        aclCheck(aclrtSynchronizeStream(aclStream));
-        Adx::AdumpPrintWorkSpace(ptrDumpDevice, ALL_DUMPSIZE, aclStream, "device_fag");
-        aclCheck(aclrtFree(ptrDumpDevice));
-    #else
-        if (is_bf16) {
-            if (is_causal) {
-                FAG::FAGVarlenOpt<bfloat16_t, MaskType::MASK_CAUSAL, InputLayout::TND><<<blockDim, nullptr, aclStream>>>(
+            uint8_t *ptrDumpDevice{nullptr};
+            aclCheck(aclrtMalloc(reinterpret_cast<void **>(&ptrDumpDevice), ALL_DUMPSIZE, ACL_MEM_MALLOC_HUGE_FIRST));
+            if (is_bf16) {
+                FAG::FAGVarlenOpt<bfloat16_t><<<blockDim, nullptr, aclStream>>>(
                     fftsAddr, qDevice, kDevice, vDevice, dOutDevice, nullptr, nullptr, nullptr, nullptr, nullptr,
                     attenMaskDevice, softMaxLseDevice, nullptr, outDevice, nullptr, cuSeqQlenDevice, cuSeqKvlenDevice,
-                    nullptr, nullptr, dqDevice, dkDevice, dvDevice, workspaceDevice, tilingDevice, nullptr);
+                    nullptr, nullptr, dqDevice, dkDevice, dvDevice, workspaceDevice, tilingDevice, ptrDumpDevice);
             } else {
-                FAG::FAGVarlenOpt<bfloat16_t, MaskType::NO_MASK, InputLayout::TND><<<blockDim, nullptr, aclStream>>>(
+                FAG::FAGVarlenOpt<half><<<blockDim, nullptr, aclStream>>>(
                     fftsAddr, qDevice, kDevice, vDevice, dOutDevice, nullptr, nullptr, nullptr, nullptr, nullptr,
                     attenMaskDevice, softMaxLseDevice, nullptr, outDevice, nullptr, cuSeqQlenDevice, cuSeqKvlenDevice,
-                    nullptr, nullptr, dqDevice, dkDevice, dvDevice, workspaceDevice, tilingDevice, nullptr);
+                    nullptr, nullptr, dqDevice, dkDevice, dvDevice, workspaceDevice, tilingDevice, ptrDumpDevice);
             }
-        } else {
-            if (is_causal) {
-                FAG::FAGVarlenOpt<half, MaskType::MASK_CAUSAL, InputLayout::TND><<<blockDim, nullptr, aclStream>>>(
-                    fftsAddr, qDevice, kDevice, vDevice, dOutDevice, nullptr, nullptr, nullptr, nullptr, nullptr,
-                    attenMaskDevice, softMaxLseDevice, nullptr, outDevice, nullptr, cuSeqQlenDevice, cuSeqKvlenDevice,
-                    nullptr, nullptr, dqDevice, dkDevice, dvDevice, workspaceDevice, tilingDevice, nullptr);
+            aclCheck(aclrtSynchronizeStream(aclStream));
+            Adx::AdumpPrintWorkSpace(ptrDumpDevice, ALL_DUMPSIZE, aclStream, "device_fag");
+            aclCheck(aclrtFree(ptrDumpDevice));
+        #else
+            if (is_bf16) {
+                if (is_causal) {
+                    FAG::FAGVarlenOpt<bfloat16_t, MaskType::MASK_CAUSAL, InputLayout::TND><<<blockDim, nullptr, aclStream>>>(
+                        fftsAddr, qDevice, kDevice, vDevice, dOutDevice, nullptr, nullptr, nullptr, nullptr, nullptr,
+                        attenMaskDevice, softMaxLseDevice, nullptr, outDevice, nullptr, cuSeqQlenDevice, cuSeqKvlenDevice,
+                        nullptr, nullptr, dqDevice, dkDevice, dvDevice, workspaceDevice, tilingDevice, nullptr);
+                } else {
+                    FAG::FAGVarlenOpt<bfloat16_t, MaskType::NO_MASK, InputLayout::TND><<<blockDim, nullptr, aclStream>>>(
+                        fftsAddr, qDevice, kDevice, vDevice, dOutDevice, nullptr, nullptr, nullptr, nullptr, nullptr,
+                        attenMaskDevice, softMaxLseDevice, nullptr, outDevice, nullptr, cuSeqQlenDevice, cuSeqKvlenDevice,
+                        nullptr, nullptr, dqDevice, dkDevice, dvDevice, workspaceDevice, tilingDevice, nullptr);
+                }
             } else {
-                FAG::FAGVarlenOpt<half, MaskType::NO_MASK, InputLayout::TND><<<blockDim, nullptr, aclStream>>>(
-                    fftsAddr, qDevice, kDevice, vDevice, dOutDevice, nullptr, nullptr, nullptr, nullptr, nullptr,
-                    attenMaskDevice, softMaxLseDevice, nullptr, outDevice, nullptr, cuSeqQlenDevice, cuSeqKvlenDevice,
-                    nullptr, nullptr, dqDevice, dkDevice, dvDevice, workspaceDevice, tilingDevice, nullptr);
+                if (is_causal) {
+                    FAG::FAGVarlenOpt<half, MaskType::MASK_CAUSAL, InputLayout::TND><<<blockDim, nullptr, aclStream>>>(
+                        fftsAddr, qDevice, kDevice, vDevice, dOutDevice, nullptr, nullptr, nullptr, nullptr, nullptr,
+                        attenMaskDevice, softMaxLseDevice, nullptr, outDevice, nullptr, cuSeqQlenDevice, cuSeqKvlenDevice,
+                        nullptr, nullptr, dqDevice, dkDevice, dvDevice, workspaceDevice, tilingDevice, nullptr);
+                } else {
+                    FAG::FAGVarlenOpt<half, MaskType::NO_MASK, InputLayout::TND><<<blockDim, nullptr, aclStream>>>(
+                        fftsAddr, qDevice, kDevice, vDevice, dOutDevice, nullptr, nullptr, nullptr, nullptr, nullptr,
+                        attenMaskDevice, softMaxLseDevice, nullptr, outDevice, nullptr, cuSeqQlenDevice, cuSeqKvlenDevice,
+                        nullptr, nullptr, dqDevice, dkDevice, dvDevice, workspaceDevice, tilingDevice, nullptr);
+                }
             }
-        }
-    #endif
+        #endif
+        return 0;
+    };
+    at_npu::native::OpCommand::RunOpApiV2("ascendc_fag", fag_varlen_opt_call);
+
     auto opts = q.options();
     auto softmax_d = torch::empty({fagInfo.seqQShapeSize, nheads, max_seqlen_q}, opts.dtype(at::kFloat));
     return {dq, dk, dv, softmax_d};

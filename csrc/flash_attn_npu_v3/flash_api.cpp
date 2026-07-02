@@ -5,9 +5,9 @@
 #include <limits>
 
 #include "mha_fwd_kvcache.cpp"
-// #include "mha_fwd_kvcache_2.cpp"
 #include "tilingdata.h"
 #include "torch_npu/csrc/core/npu/NPUStream.h"
+#include "torch_npu/csrc/framework/OpCommand.h"
 #include "acl/acl.h"
 #include "runtime/rt_ffts.h"
 #include "kernel_common.hpp"
@@ -797,7 +797,7 @@ mha_bwd(at::Tensor dout,  // (b, s_q, h, dv) or (total_q, h, dv) if there is cu_
         cuSeqKvlenDevice = static_cast<uint8_t *>(const_cast<void *>(seqlenk_gpu_tensor.data_ptr()));
     }
     
-    auto launch_fag = [&](auto layout_tag) {
+    auto launch_fag = [=](auto layout_tag) {
         constexpr uint32_t kInputLayout = decltype(layout_tag)::value;
         if (is_bf16) {
             if (has_attn_mask) {
@@ -1045,35 +1045,16 @@ mha_bwd(at::Tensor dout,  // (b, s_q, h, dv) or (total_q, h, dv) if there is cu_
             }
         }
     };
-    if (is_varlen_q) {
-        launch_fag(std::integral_constant<uint32_t, static_cast<uint32_t>(TND)>());
-    } else {
-        launch_fag(std::integral_constant<uint32_t, static_cast<uint32_t>(BSND)>());
-    }
 
-    {
-        aclrtStream stream = reinterpret_cast<aclrtStream>(aclStream);
-        aclError sync_st = aclrtSynchronizeStream(stream);
-        at::Tensor lse_cpu = softmax_lse_kernel.to(at::kCPU).contiguous();
-        const float *lp = lse_cpu.data_ptr<float>();
-        const int64_t tot = lse_cpu.numel();
-        const int64_t nshow = std::min<int64_t>(16, tot);
-        float vmin = std::numeric_limits<float>::infinity();
-        float vmax = -std::numeric_limits<float>::infinity();
-        int64_t ninf = 0;
-        int64_t nnan = 0;
-        for (int64_t i = 0; i < tot; ++i) {
-            const float v = lp[i];
-            if (std::isnan(v)) {
-                ++nnan;
-            } else if (!std::isfinite(v)) {
-                ++ninf;
-            } else {
-                vmin = std::min(vmin, v);
-                vmax = std::max(vmax, v);
-            }
+    auto launch_fag_general_kernel = [=]() -> int {
+        if (is_varlen_q) {
+            launch_fag(std::integral_constant<uint32_t, static_cast<uint32_t>(TND)>());
+        } else {
+            launch_fag(std::integral_constant<uint32_t, static_cast<uint32_t>(BSND)>());
         }
-    }
+        return 0;
+    };
+    at_npu::native::OpCommand::RunOpApiV2("ascendc_fag_general", launch_fag_general_kernel);
 
     auto opts = q.options();
     auto softmax_d = torch::empty({batch_size, nheads, max_seqlen_q}, opts.dtype(at::kFloat));
