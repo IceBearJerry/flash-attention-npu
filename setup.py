@@ -14,6 +14,7 @@ import platform
 from setuptools import setup, find_packages, Extension
 from setuptools.command.build_ext import build_ext
 import subprocess
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import urllib.request
 import urllib.error
@@ -58,13 +59,23 @@ def get_platform():
     else:
         raise ValueError("Unsupported platform: {}".format(sys.platform))
 
+def get_cann_arch_dir():
+    return f"{platform.machine()}-linux"  # aarch64-linux | x86_64-linux
+
 class BishengBuildExt(build_ext):
-    def build_extension(self, ext):
+    _toolchains = None
+
+    def _get_toolchain(self, ext_name):
+        if self._toolchains is None:
+            self._toolchains = {}
+        if ext_name in self._toolchains:
+            return self._toolchains[ext_name]
+
         ascend_home = os.getenv("ASCEND_TOOLKIT_HOME", os.getenv("ASCEND_HOME_PATH", "/usr/local/Ascend"))
         if not os.path.exists(ascend_home):
             raise RuntimeError(f"ASCEND_TOOLKIT_HOME={ascend_home}")
 
-        is_950 = ext.name.startswith("flash_attn_npu_950_")
+        is_950 = ext_name.startswith("flash_attn_npu_950_")
         npu_arch = "dav-3510" if is_950 else "dav-2201"
         catlass_inc = (
             f"-I{this_dir}/csrc_AscendC950/catlass/include"
@@ -83,12 +94,12 @@ class BishengBuildExt(build_ext):
 
         asc_include_paths = [
             os.path.join(ascend_home, "compiler/tikcpp/include"),
-            os.path.join(ascend_home, "aarch64-linux/tikcpp/include"),
+            os.path.join(ascend_home, get_cann_arch_dir(), "tikcpp/include"),
         ]
 
         asc_lib_paths = [
             os.path.join(ascend_home, "compiler/lib64"),
-            os.path.join(ascend_home, "aarch64-linux/lib64"),
+            os.path.join(ascend_home, get_cann_arch_dir(), "lib64"),
         ]
 
         python_include = sysconfig.get_path('include')
@@ -101,65 +112,20 @@ class BishengBuildExt(build_ext):
         torch_npu_path = os.path.dirname(torch_npu.__file__)
         torch_npu_include = os.path.join(torch_npu_path, "include")
         torch_npu_lib = os.path.join(torch_npu_path, "lib")
-        ext_fullpath = self.get_ext_fullpath(ext.name)
-        os.makedirs(os.path.dirname(ext_fullpath), exist_ok=True)
 
         torch_abi = torch._C._GLIBCXX_USE_CXX11_ABI
         abi_flag = f"-D_GLIBCXX_USE_CXX11_ABI={1 if torch_abi else 0}"
 
-        aicpu_objects = []
-        if ext.name == "flash_attn_npu_3":
-            v3_dir = os.path.join(this_dir, "csrc", "flash_attn_npu_v3")
-            aicpu_src = os.path.join(v3_dir, "fa_metadata.aicpu")
-            aicpu_obj = os.path.join(os.path.dirname(ext_fullpath), "fa_metadata.o")
-            aicpu_inc = os.path.join(ascend_home, "aarch64-linux/asc/include/aicpu_api")
-            aicpu_lib = os.path.join(ascend_home, "aarch64-linux/lib64/device/lib64")
-            hcc = os.path.join(ascend_home, "toolkit/toolchain/hcc")
-            hcc_isys = os.path.join(hcc, "aarch64-target-linux-gnu/include")
-            hcc_cpp = os.path.join(hcc_isys, "c++/7.3.0")
-            aicpu_cmd = [
-                "bisheng",
-                "-O2",
-                "-std=c++17",
-                "-fvisibility=default",
-                "-fvisibility-inlines-hidden",
-                "-D_GLIBCXX_USE_CXX11_ABI=0",
-                "-D_FORTIFY_SOURCE=2",
-                "-D_GNU_SOURCE",
-                f"-I{aicpu_inc}",
-                f"-I{v3_dir}",  # tilingdata.h
-                f"--cce-aicpu-L{aicpu_lib}",
-                "--cce-aicpu-laicpu_api",
-                f"--cce-aicpu-toolkit-path={os.path.join(hcc, 'bin')}",
-                f"--cce-aicpu-sysroot={os.path.join(hcc, 'sysroot')}",
-                "-isystem", hcc_isys,
-                "-isystem", hcc_cpp,
-                "-isystem", os.path.join(hcc_cpp, "aarch64-target-linux-gnu"),
-                "-isystem", os.path.join(hcc_cpp, "backward"),
-                "-c",
-                "-o", aicpu_obj,
-                "-x", "aicpu", aicpu_src,
-            ]
-            print(" ".join(aicpu_cmd))
-            try:
-                result = subprocess.run(aicpu_cmd, capture_output=True, text=True, check=True)
-                print(f"AICPU compilation successful! output: {result.stdout}")
-            except subprocess.CalledProcessError as e:
-                print(f"AICPU compilation failed! Error output: {e.stderr}")
-                raise e
-            aicpu_objects.append(aicpu_obj)
-
-        compile_cmd = [
-            "bisheng",
-            "-O2",
+        compile_arch_flags = [
             "-x", "asc",
             f"--npu-arch={npu_arch}",
             *(["--cce-auto-infer-kernel-type=false"] if parse(torch_npu.utils.get_cann_version()) >= parse("9.0.0") else []),
-            "-shared",
-            "-fPIC",
             *extra_defines,
-            "-std=c++17",
-            abi_flag,
+        ]
+        # At link time only the target arch is needed (for device-code linking).
+        link_arch_flags = [f"--npu-arch={npu_arch}"]
+
+        include_flags = [
             *[f"-I{p}" for p in asc_include_paths],
             f"-I{python_include}",
             f"-I{torch_npu_include}",
@@ -174,6 +140,9 @@ class BishengBuildExt(build_ext):
             f"-I{torch_package_path}/include/torch/csrc/api/include",
             catlass_inc,
             *extra_includes,
+        ]
+
+        link_flags = [
             *[f"-L{p}" for p in asc_lib_paths],
             f"-L{torch_lib}",
             f"-L{torch_npu_lib}",
@@ -183,52 +152,197 @@ class BishengBuildExt(build_ext):
             "-ltorch_npu",
             "-ltiling_api",
             "-lplatform",
-            *ext.sources,
-            *(["-x", "none", *aicpu_objects] if aicpu_objects else []),
-            "-o", ext_fullpath,
         ]
 
-        print(" ".join(compile_cmd))
+        # NOTE: ccache is intentionally NOT supported. bisheng requires `-x asc`
+        # to enter ASC/device-compile mode (without it, kernel_operator.h and the
+        # ASC headers are unresolvable). ccache hard-rejects any `-x <lang>` it
+        # does not recognize, treating `-x asc` as "Unsupported language: asc" and
+        # falling back to running the real compiler with zero caching — so wrapping
+        # bisheng in ccache provides no benefit. If ccache ever adds ASC language
+        # support, reintroduce an opt-in wrapper here.
+        compiler = ["bisheng"]
 
+        compile_common = [*compiler, "-O2", *compile_arch_flags, "-fPIC", "-std=c++17",
+                          abi_flag, *include_flags]
+
+        self._toolchains[ext_name] = (compiler, compile_common, link_arch_flags, link_flags)
+        return self._toolchains[ext_name]
+
+    def _build_aicpu_metadata(self, ext_fullpath):
+        """Compile fa_metadata.aicpu (host AICPU object) for the v3-910 extension
+        (flash_attn_npu_3). This is a separate `bisheng -x aicpu` invocation
+        (host CPU code cross-compiled with hcc, not ASC device code); the
+        resulting object is linked into flash_attn_npu_3 alongside the ASC device
+        objects. Returns the .o path, or None if there is no aicpu source.
+        Preserved from main's metadata feature through the parallel-pipeline
+        refactor."""
+        ascend_home = os.getenv("ASCEND_TOOLKIT_HOME", os.getenv("ASCEND_HOME_PATH", "/usr/local/Ascend"))
+        v3_dir = os.path.join(this_dir, "csrc", "flash_attn_npu_v3")
+        aicpu_src = os.path.join(v3_dir, "fa_metadata.aicpu")
+        if not os.path.exists(aicpu_src):
+            return None
+        aicpu_obj = os.path.join(os.path.dirname(ext_fullpath), "fa_metadata.o")
+        cann_arch_dir = get_cann_arch_dir()
+        aicpu_inc = os.path.join(ascend_home, cann_arch_dir, "asc/include/aicpu_api")
+        aicpu_lib = os.path.join(ascend_home, cann_arch_dir, "lib64/device/lib64")
+        hcc = os.path.join(ascend_home, "toolkit/toolchain/hcc")
+        hcc_isys = os.path.join(hcc, "aarch64-target-linux-gnu/include")
+        hcc_cpp = os.path.join(hcc_isys, "c++/7.3.0")
+        aicpu_cmd = [
+            "bisheng",
+            "-O2",
+            "-std=c++17",
+            "-fvisibility=default",
+            "-fvisibility-inlines-hidden",
+            "-D_GLIBCXX_USE_CXX11_ABI=0",
+            "-D_FORTIFY_SOURCE=2",
+            "-D_GNU_SOURCE",
+            f"-I{aicpu_inc}",
+            f"-I{v3_dir}",  # tilingdata.h
+            f"--cce-aicpu-L{aicpu_lib}",
+            "--cce-aicpu-laicpu_api",
+            f"--cce-aicpu-toolkit-path={os.path.join(hcc, 'bin')}",
+            f"--cce-aicpu-sysroot={os.path.join(hcc, 'sysroot')}",
+            "-isystem", hcc_isys,
+            "-isystem", hcc_cpp,
+            "-isystem", os.path.join(hcc_cpp, "aarch64-target-linux-gnu"),
+            "-isystem", os.path.join(hcc_cpp, "backward"),
+            "-c",
+            "-o", aicpu_obj,
+            "-x", "aicpu", aicpu_src,
+        ]
+        print("[compile-aicpu]", aicpu_src)
+        print("[compile-aicpu-cmd]", " ".join(aicpu_cmd))
         try:
-            result = subprocess.run(
-                compile_cmd,
-                capture_output=True,
-                text=True,
-                check=True
-            )
-            print(f"Compilation successful! output: {result.stdout}")
+            result = subprocess.run(aicpu_cmd, capture_output=True, text=True, check=True)
+            if result.stdout:
+                print(result.stdout)
+            print(f"AICPU compilation successful! output: {aicpu_obj}")
         except subprocess.CalledProcessError as e:
-            print(f"Compilation failed! Error output: {e.stderr}")
+            print(f"AICPU compilation failed! Error output:\n{e.stderr}")
             raise e
+        return aicpu_obj
+
+    def build_extensions(self):
+        toolchains = {ext.name: self._get_toolchain(ext.name) for ext in self.extensions}
+
+        # Map every TU source -> (ext_name, obj_path). obj dir is per-extension so
+        # v2/v3 .o files (same basenames, e.g. flash_api.o) never collide.
+        tasks = []  # (ext_name, src, obj)
+        for ext in self.extensions:
+            ext_fullpath = self.get_ext_fullpath(ext.name)
+            os.makedirs(os.path.dirname(ext_fullpath), exist_ok=True)
+            obj_dir = os.path.join(os.path.dirname(ext_fullpath), ext.name + ".objs")
+            os.makedirs(obj_dir, exist_ok=True)
+            for src in ext.sources:
+                obj = os.path.join(obj_dir, os.path.splitext(os.path.basename(src))[0] + ".o")
+                tasks.append((ext.name, src, obj))
+
+        def compile_one(task):
+            ext_name, src, obj = task
+            _compiler, compile_common, _la, _lf = toolchains[ext_name]
+            cmd = [*compile_common, "-c", src, "-o", obj]
+            print("[compile]", ext_name, os.path.basename(src))
+            print("[compile-cmd]", " ".join(cmd))
+            try:
+                result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+                if result.stdout:
+                    print(result.stdout)
+                return (ext_name, obj)
+            except subprocess.CalledProcessError as e:
+                print(f"Compilation failed for {src}! Error output:\n{e.stderr}")
+                raise
+
+        # One shared pool across all extensions so the heaviest TUs compile
+        # concurrently regardless of which extension owns them. TUs per extension
+        # once autogen dispatch TUs are added: v2=12, v3-910=9, v3-950=6.
+        max_workers = min(len(tasks), os.cpu_count() or 1)
+        objs_by_ext = {ext.name: [] for ext in self.extensions}
+        with ThreadPoolExecutor(max_workers=max_workers) as ex:
+            futures = {ex.submit(compile_one, t): t for t in tasks}
+            for fut in as_completed(futures):
+                ext_name, obj = fut.result()
+                objs_by_ext[ext_name].append(obj)
+
+        # AICPU metadata object for the v3-910 extension: compiled separately
+        # (host code, `bisheng -x aicpu`) and appended to that extension's link
+        # set. Built after the parallel ASC compiles, before linking.
+        for ext in self.extensions:
+            if ext.name == "flash_attn_npu_3":
+                ext_fullpath = self.get_ext_fullpath(ext.name)
+                aicpu_obj = self._build_aicpu_metadata(ext_fullpath)
+                if aicpu_obj is not None:
+                    objs_by_ext[ext.name].append(aicpu_obj)
+
+        # Link each extension from its own object files (serial; link is cheap
+        # relative to compile and each ext needs only its own .o set).
+        for ext in self.extensions:
+            ext_fullpath = self.get_ext_fullpath(ext.name)
+            objs = objs_by_ext[ext.name]
+            compiler, _cc, link_arch_flags, link_flags = toolchains[ext.name]
+            link_cmd = [*compiler, *link_arch_flags, "-shared", "-fPIC", *objs, *link_flags, "-o", ext_fullpath]
+            print("[link]", ext_fullpath)
+            print("[link-cmd]", " ".join(link_cmd))
+            try:
+                result = subprocess.run(link_cmd, capture_output=True, text=True, check=True)
+                if result.stdout:
+                    print(result.stdout)
+                print(f"Link successful! output: {ext_fullpath}")
+            except subprocess.CalledProcessError as e:
+                print(f"Link failed! Error output:\n{e.stderr}")
+                raise e
+
+    def build_extension(self, ext):
+        saved = self.extensions
+        self.extensions = [ext]
+        try:
+            self.build_extensions()
+        finally:
+            self.extensions = saved
 
 ext_modules = []
+catlass_needed = []
+if BUILD_VERSION in ("v2", "v3", "all"):
+    catlass_needed.append("csrc/catlass")
+if BUILD_VERSION in ("v3", "all"):
+    catlass_needed.append("csrc_AscendC950/catlass")
 
-if os.path.isdir(".git"):
-    submodules = []
-    if BUILD_VERSION in ("v2", "v3", "all"):
-        submodules.append("csrc/catlass")
-    if BUILD_VERSION in ("v3", "all"):
-        submodules.append("csrc_AscendC950/catlass")
-    if submodules:
-        subprocess.run(
-            ["git", "submodule", "update", "--init", *submodules], check=True
+if os.path.isdir(".git") and catlass_needed:
+    subprocess.run(
+        ["git", "submodule", "update", "--init", *catlass_needed], check=False
+    )
+
+for sub in catlass_needed:
+    if not os.path.exists(os.path.join(this_dir, sub, "include/catlass/catlass.hpp")):
+        raise RuntimeError(
+            f"{sub} is missing its catlass headers (include/catlass/catlass.hpp). "
+            f"The submodule gitlink may be unreachable. Run "
+            f"`git -C {sub} checkout master` (or fetch the submodule manually) "
+            f"and retry."
         )
-else:
-    if BUILD_VERSION in ("v2", "v3", "all"):
-        assert os.path.exists(
-            "csrc/catlass/include/catlass/catlass.hpp"
-        ), "csrc/catlass is missing, please use source distribution or git clone"
-    if BUILD_VERSION in ("v3", "all"):
-        assert os.path.exists(
-            "csrc_AscendC950/catlass/include/catlass/catlass.hpp"
-        ), "csrc_AscendC950/catlass is missing, please use source distribution or git clone"
 
 source_files = glob.glob(os.path.join(this_dir, "csrc/flash_attn_npu", "flash_api.cpp"), recursive=True)
 source_files += glob.glob(os.path.join(this_dir, "csrc/flash_attn_npu", "fag_general_host.cpp"), recursive=True)
+# v2's forward FAInfer / FAGGeneral backward / varlen-backward dispatch is split
+# into per-(dtype, layout) translation units under autogen/, generated by
+# autogen/generate_kernels.py, so the heavy kernel templates compile in parallel.
+source_files += glob.glob(os.path.join(this_dir, "csrc/flash_attn_npu", "autogen", "*.cpp"), recursive=True)
 source_files_v3 = glob.glob(os.path.join(this_dir, "csrc/flash_attn_npu_v3", "flash_api.cpp"), recursive=True)
+# v3-910's forward FAInfer / backward FAGGeneral dispatch is split into per-
+# (dtype, layout) translation units under autogen/, generated by
+# autogen/generate_kernels.py. flash_api.cpp keeps the fa_split host loop +
+# metadata logic; the kernel templates are instantiated only in the autogen TUs.
+source_files_v3 += glob.glob(os.path.join(this_dir, "csrc/flash_attn_npu_v3", "autogen", "*.cpp"), recursive=True)
 source_files_950_v3 = glob.glob(os.path.join(this_dir, "csrc_AscendC950/flash_attn_npu_v3", "flash_api.cpp"), recursive=True)
 source_files_950_v3 += glob.glob(os.path.join(this_dir, "csrc_AscendC950/flash_attn_npu_v3", "fai_host_api.cpp"),recursive=True)
+# v3-950's forward FAInfer dispatch is split into per-(dtype, layout) translation
+# units under autogen/, generated by autogen/generate_kernels.py, so the FAInfer /
+# FAInferDn kernel templates compile in parallel. fai_host_api.cpp stays a
+# lightweight router (BuildKernelKey + LaunchFAI); the kernel templates are
+# instantiated only in the autogen TUs. head_dim is a runtime tiling axis, not a
+# generation axis, so it is not enumerated here.
+source_files_950_v3 += glob.glob(os.path.join(this_dir, "csrc_AscendC950/flash_attn_npu_v3", "autogen", "*.cpp"), recursive=True)
 
 if not SKIP_NPU_BUILD:
     if BUILD_VERSION in ("v2", "all"):
@@ -277,7 +391,6 @@ def get_wheel_url():
 
     npu_ver_tag = "80"
     wheel_filename = f"{PACKAGE_NAME}-{flash_version}+npu{npu_ver_tag}torch{torch_version}cxx11abi{cxx11_abi}-{python_version}-{python_version}-{platform_name}.whl"
-   
     wheel_url = BASE_WHEEL_URL.format(tag_name=f"v{flash_version}", wheel_name=wheel_filename)
 
     return wheel_url, wheel_filename
@@ -348,6 +461,5 @@ setup(
     install_requires=[
         "torch",
         "torch_npu",
-        "einops",
     ],
 )
