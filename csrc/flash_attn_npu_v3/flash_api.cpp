@@ -222,6 +222,7 @@ mha_fwd(at::Tensor q,   // (b, s_q, h, d) or (total_q, h, d) if there is cu_seql
     uint8_t *tilingDevice = nullptr;
     uint8_t *maskDevice = nullptr;
     bool flashDecodeFlag = false;
+    bool is_local = false;
 
     at::Tensor softmaxlse = at::empty({batch_size, num_heads, seqlen_q}, at::device(at::kPrivateUse1).dtype(at::kFloat));
     if (is_varlen_q) {
@@ -278,6 +279,22 @@ mha_fwd(at::Tensor q,   // (b, s_q, h, d) or (total_q, h, d) if there is cu_seql
             max_kv_seqlen = std::max(max_kv_seqlen, seqlens_k_cpu[i]);
         }
         tiling_cpu_ptr->set_maxKvSeqlen(static_cast<uint32_t>(max_kv_seqlen));
+        // causal=true is the same as causal=false when seqlen_q == 1 (decode).
+        if (seqlen_q == 1) {
+            is_causal = false;
+        }
+        const bool causal_flag = is_causal;
+        if (max_kv_seqlen > 0 && window_size_left >= max_kv_seqlen - 1) {
+            window_size_left = -1;
+        }
+        if (seqlen_q > 0 && window_size_right >= seqlen_q - 1) {
+            window_size_right = -1;
+        }
+        if (causal_flag) {
+            window_size_right = 0;
+        }
+        is_causal = (window_size_left < 0 && window_size_right == 0);
+        is_local = (window_size_left >= 0 || window_size_right >= 0) && !is_causal;
         if (is_local) {
             tiling_cpu_ptr->set_windowSizeLeft(window_size_left);
             tiling_cpu_ptr->set_windowSizeRight(window_size_right);
@@ -446,6 +463,7 @@ mha_fwd(at::Tensor q,   // (b, s_q, h, d) or (total_q, h, d) if there is cu_seql
                             qSeqDevice, kvSeqDevice, workspaceDevice, tilingDevice);
                 }
             }
+        } else {
             if (is_local) {
                 if (is_varlen_q) {
                     SplitFuse::FAInfer<bfloat16_t, bfloat16_t, float, false, FaiKenel::MaskType::MASK_SWA, FaiKenel::inputLayout::TND, Catlass::Epilogue::LseModeT::OUT_ONLY><<<launchBlockDim, nullptr, aclStream>>>(
@@ -839,7 +857,7 @@ mha_bwd(at::Tensor dout,  // (b, s_q, h, dv) or (total_q, h, dv) if there is cu_
         cuSeqQlenDevice = static_cast<uint8_t *>(const_cast<void *>(seqlenq_gpu_tensor.data_ptr()));
         cuSeqKvlenDevice = static_cast<uint8_t *>(const_cast<void *>(seqlenk_gpu_tensor.data_ptr()));
     }
-    
+
     auto launch_fag = [=](auto layout_tag) {
         constexpr uint32_t kInputLayout = decltype(layout_tag)::value;
         if (is_bf16) {

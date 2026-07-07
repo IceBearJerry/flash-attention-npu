@@ -313,45 +313,26 @@ def test_fa_custom_ops(data_type, batch_size, num_heads, kv_heads, q_seqlen, kv_
         golden_lseL[i:i+1] = golden_lse.reshape(num_heads, q_seqlen)
     rtol = 1e-2
     atol = 1e-2
-    print("=======================================")
-    print(softmax_lse.shape)
-    print(softmax_lse)
-    print("=======================================")
-    print(golden_lseL.shape)
-    print(golden_lseL)
     torch.testing.assert_close(out_out.cpu(), golden_out.cpu(), rtol=rtol, atol=atol)
     torch.testing.assert_close(softmax_lse.cpu(), golden_lseL.cpu(), rtol=rtol, atol=atol)
 
 
 test_cases = [
-    # (data_type, batch_size, num_heads, kv_heads, q_seqlen, kv_seqlen, head_size, cache_mode, block_size, is_causal, window_size_left, window_size_right)
-    (torch.bfloat16, 1, 1, 1, 1024, 1024, 128, 1, 128, False, -1, -1),
-    (torch.bfloat16, 5, 4, 4, 1024, 1024, 128, 0, 128, True, -1, -1),
-    (torch.float16, 7, 1, 1, 512, 512, 128, 1, 128, False, -1, -1),
-    (torch.bfloat16, 1, 1, 1, 1, 1024, 128, 1, 128, True, -1, -1),
-    (torch.bfloat16, 1, 1, 1, 1, 1024, 128, 1, 128, False, -1, -1),
-    (torch.bfloat16, 1, 1, 1, 1024, 1024, 128, 1, 128, False, -1, -1),
-    (torch.bfloat16, 5, 4, 4, 1024, 1024, 128, 1, 128, True, -1, -1),
-    (torch.float16, 7, 1, 1, 512, 512, 128, 1, 128, False, -1, -1),
-    (torch.bfloat16, 1, 1, 1, 1024, 1024, 128, 1, 128, False, -1, -1),
-    (torch.bfloat16, 2, 1, 1, 1024, 1024, 128, 1, 128, False, -1, -1),
-    (torch.bfloat16, 2, 1, 1, 1024, 1024, 128, 1, 128, False, -1, -1),
-    (torch.bfloat16, 5, 4, 4, 1024, 1024, 128, 1, 128, True, -1, -1),
-    (torch.bfloat16, 5, 4, 4, 1024, 1024, 128, 1, 128, True, -1, -1),
-    (torch.bfloat16, 1, 1, 1, 1, 1024, 128, 1, 128, True, -1, -1),
-    (torch.bfloat16, 1, 1, 1, 1, 1024, 128, 1, 128, False, -1, -1),
-    (torch.bfloat16, 1, 1, 1, 1, 1024, 128, 1, 128, True, -1, -1),
-    (torch.bfloat16, 1, 1, 1, 1, 1024, 128, 1, 128, False, -1, -1),
-    # kv=4096 -> 8 S2 blocks: num_splits=2 -> 2 segs (4 blk each), num_splits=4 -> 4 segs (2 blk each).
-    (torch.bfloat16, 1, 1, 1, 1, 4096, 128, 1, 128, False, -1, -1),
-    (torch.bfloat16, 2, 1, 1, 1, 2048, 128, 1, 128, False, -1, -1),
-    (torch.float16, 2, 2, 1, 128, 128, 128, 1, 128, True, -1, -1),
-    (torch.bfloat16, 2, 6, 2, 2, 1024, 128, 1, 128, True, -1, -1),
-    (torch.bfloat16, 1, 1, 1, 1024, 1024, 128, 1, 128, True, 512, 0),  # Mistral-style causal SWA
-    (torch.bfloat16, 1, 1, 1, 1024, 1024, 128, 1, 128, True, 512, 256),
-    (torch.bfloat16, 5, 4, 4, 1024, 1024, 128, 0, 128, True, -128, 864),
-    (torch.bfloat16, 1, 1, 1, 1024, 1024, 128, 1, 128, False, 0, 256),
-    (torch.float16, 2, 2, 2, 512, 512, 128, 0, 128, False, 64, 128),
+    # (data_type, batch_size, num_heads, kv_heads, q_seqlen, kv_seqlen, head_size, return_attn_probs, is_causal)
+    (torch.float16, 1, 1, 1, 1024, 1024, 128, True, False),
+    (torch.float16, 5, 4, 4, 1024, 1024, 128, True, True),
+    (torch.float16, 7, 1, 1, 512, 512, 128, True, False),
+    (torch.float16, 1, 1, 1, 1024, 1024, 128, False, False),
+    (torch.float16, 5, 4, 4, 1024, 1024, 128, False, True),
+    (torch.float16, 7, 1, 1, 512, 512, 128, False, False),
+    (torch.float16, 4, 2, 1, 513, 513, 128, False, False),
+    (torch.bfloat16, 1, 1, 1, 1024, 1024, 128, True, False),
+    (torch.bfloat16, 5, 4, 4, 1024, 1024, 128, True, True),
+    (torch.bfloat16, 7, 1, 1, 512, 512, 128, True, False),
+    (torch.bfloat16, 1, 1, 1, 1024, 1024, 128, False, False),
+    (torch.bfloat16, 5, 4, 4, 1024, 1024, 128, False, True),
+    (torch.bfloat16, 7, 1, 1, 512, 512, 128, False, False),
+    (torch.float16, 4, 2, 1, 513, 513, 128, False, False),
 ]
 @pytest.mark.parametrize("data_type, batch_size, num_heads, kv_heads, q_seqlen, kv_seqlen, head_size, return_attn_probs, is_causal", test_cases)
 def test_fa_fwd_custom_ops(data_type, batch_size, num_heads, kv_heads, q_seqlen, kv_seqlen, head_size, return_attn_probs, is_causal):
@@ -416,34 +397,14 @@ def test_fa_fwd_custom_ops(data_type, batch_size, num_heads, kv_heads, q_seqlen,
         torch.testing.assert_close(softmax_lse.cpu(), golden_lseL.cpu(), rtol=rtol, atol=atol)
 
 test_cases = [
-    # (data_type, batch_size, num_heads, kv_heads, q_seqlen, kv_seqlen, head_size, cache_mode, block_size, is_causal, window_size_left, window_size_right)
-    (torch.bfloat16, 1, 1, 1, 1024, 1024, 128, 1, 128, False, -1, -1),
-    (torch.bfloat16, 5, 4, 4, 1024, 1024, 128, 0, 128, True, -1, -1),
-    (torch.float16, 7, 1, 1, 512, 512, 128, 1, 128, False, -1, -1),
-    (torch.bfloat16, 1, 1, 1, 1, 1024, 128, 1, 128, True, -1, -1),
-    (torch.bfloat16, 1, 1, 1, 1, 1024, 128, 1, 128, False, -1, -1),
-    (torch.bfloat16, 1, 1, 1, 1024, 1024, 128, 1, 128, False, -1, -1),
-    (torch.bfloat16, 5, 4, 4, 1024, 1024, 128, 1, 128, True, -1, -1),
-    (torch.float16, 7, 1, 1, 512, 512, 128, 1, 128, False, -1, -1),
-    (torch.bfloat16, 1, 1, 1, 1024, 1024, 128, 1, 128, False, -1, -1),
-    (torch.bfloat16, 2, 1, 1, 1024, 1024, 128, 1, 128, False, -1, -1),
-    (torch.bfloat16, 2, 1, 1, 1024, 1024, 128, 1, 128, False, -1, -1),
-    (torch.bfloat16, 5, 4, 4, 1024, 1024, 128, 1, 128, True, -1, -1),
-    (torch.bfloat16, 5, 4, 4, 1024, 1024, 128, 1, 128, True, -1, -1),
-    (torch.bfloat16, 1, 1, 1, 1, 1024, 128, 1, 128, True, -1, -1),
-    (torch.bfloat16, 1, 1, 1, 1, 1024, 128, 1, 128, False, -1, -1),
-    (torch.bfloat16, 1, 1, 1, 1, 1024, 128, 1, 128, True, -1, -1),
-    (torch.bfloat16, 1, 1, 1, 1, 1024, 128, 1, 128, False, -1, -1),
-    # kv=4096 -> 8 S2 blocks: num_splits=2 -> 2 segs (4 blk each), num_splits=4 -> 4 segs (2 blk each).
-    (torch.bfloat16, 1, 1, 1, 1, 4096, 128, 1, 128, False, -1, -1),
-    (torch.bfloat16, 2, 1, 1, 1, 2048, 128, 1, 128, False, -1, -1),
-    (torch.float16, 2, 2, 1, 128, 128, 128, 1, 128, True, -1, -1),
-    (torch.bfloat16, 2, 6, 2, 2, 1024, 128, 1, 128, True, -1, -1),
-    (torch.bfloat16, 1, 1, 1, 1024, 1024, 128, 1, 128, True, 512, 0),  # Mistral-style causal SWA
-    (torch.bfloat16, 1, 1, 1, 1024, 1024, 128, 1, 128, True, 512, 256),
-    (torch.bfloat16, 5, 4, 4, 1024, 1024, 128, 0, 128, True, -128, 864),
-    (torch.bfloat16, 1, 1, 1, 1024, 1024, 128, 1, 128, False, 0, 256),
-    (torch.float16, 2, 2, 2, 512, 512, 128, 0, 128, False, 64, 128),
+    # (data_type, batch_size, num_heads, kv_heads, q_seqlen, kv_seqlen, head_size, is_causal)
+    (torch.bfloat16, 1, 1, 1, 512, 1024, 128, True),
+    (torch.bfloat16, 2, 4, 4, 1024, 1024, 128, False),
+    (torch.float16, 7, 5, 1, 512, 512, 128, True),
+    (torch.float16, 7, 5, 1, 777, 888, 192, False),
+    (torch.float16, 7, 5, 1, 1777, 1888, 256, True),
+    (torch.bfloat16, 1, 1, 1, 7777, 8192, 64, True),
+    (torch.bfloat16, 7, 5, 1, 711, 8192, 111, True),
 ]
 
 @pytest.mark.parametrize("data_type, batch_size, num_heads, kv_heads, q_seqlen, kv_seqlen, head_size, is_causal", test_cases)
