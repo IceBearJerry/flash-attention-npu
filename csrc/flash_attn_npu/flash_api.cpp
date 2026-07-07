@@ -3,18 +3,32 @@
 #include <cstring>
 #include <limits>
 
-#include "mha_fwd_kvcache.cpp"
 #include "tilingdata.h"
 #include "acl/acl.h"
 #include "tiling/platform/platform_ascendc.h"
-#include "mha_varlen_bwd.cpp"
+// kernel_operator.h (AscendC) defines GM_ADDR, which kernel_common.hpp uses;
+// catlass/catlass.hpp defines the Catlass namespace / CATLASS_DEVICE. Both were
+// formerly pulled in transitively by mha_fwd_kvcache.cpp / mha_varlen_bwd.cpp,
+// which are now compiled as separate dispatch TUs, so include them explicitly
+// here, in this order.
+#include "kernel_operator.h"
+#include "catlass/catlass.hpp"
+#include "kernel_common.hpp"
+// common_header.h defines TILING_PARA_NUM and the varlen-bwd tiling constants
+// used below; formerly pulled in transitively by mha_varlen_bwd.cpp.
+#include "fag_common/common_header.h"
 #include "fag_tiling.cpp"
 #include "fag_general_host.hpp"
 #include "torch_npu/csrc/core/npu/NPUStream.h"
 #include "runtime/rt_ffts.h"
-#include "kernel_common.hpp"
-#include "kernel_operator.h"
-#include "kernel_operator.h"
+#include "fwd_dispatch.hpp"
+#include "varlen_bwd_dispatch.hpp"
+
+// mha_fwd_kvcache.cpp / mha_varlen_bwd.cpp used to carry these using-directives
+// into this TU; restore them so the unqualified KernelCommon constants
+// (Q_TILE_CEIL, ...) used by the host helpers below resolve.
+using namespace Catlass;
+using namespace KernelCommon;
 
 uint32_t GetQNBlockTile(uint32_t qSeqlen, uint32_t groupSize)
 {
@@ -561,75 +575,28 @@ mha_fwd_kvcache(at::Tensor &q,                 // batch_size x seqlen_q x num_he
     auto workspaceDevice = static_cast<uint8_t *>(workspace_tensor.data_ptr());
     auto tilingDevice = static_cast<uint8_t *>(tiling_gpu_tensor.data_ptr());
     auto softmaxLseDevice = static_cast<uint8_t *>(softmaxlse.data_ptr());
-    if (is_bf16) {
-        if (paged_KV) {
-            if (is_causal) {
-                if (flashDecodeFlag) {
-                    SplitFuse::FAInfer<bfloat16_t, bfloat16_t, float, true, FaiKenel::MaskType::MASK_CAUSAL, FaiKenel::inputLayout::BSND, Catlass::Epilogue::LseModeT::OUT_ONLY, true><<<launchBlockDim, nullptr, aclStream>>>(
-                        fftsAddr, qDevice, kDevice, vDevice, maskDevice, blockTableDevice, oDevice, softmaxLseDevice,
-                        qSeqDevice, kvSeqDevice, workspaceDevice, tilingDevice);
-                } else {
-                    SplitFuse::FAInfer<bfloat16_t, bfloat16_t, float, true, FaiKenel::MaskType::MASK_CAUSAL, FaiKenel::inputLayout::BSND, Catlass::Epilogue::LseModeT::OUT_ONLY><<<launchBlockDim, nullptr, aclStream>>>(
-                        fftsAddr, qDevice, kDevice, vDevice, maskDevice, blockTableDevice, oDevice, softmaxLseDevice,
-                        qSeqDevice, kvSeqDevice, workspaceDevice, tilingDevice);
-                }
-            } else {
-                if (flashDecodeFlag) {
-                    SplitFuse::FAInfer<bfloat16_t, bfloat16_t, float, true, FaiKenel::MaskType::NO_MASK, FaiKenel::inputLayout::BSND, Catlass::Epilogue::LseModeT::OUT_ONLY, true><<<launchBlockDim, nullptr, aclStream>>>(
-                        fftsAddr, qDevice, kDevice, vDevice, maskDevice, blockTableDevice, oDevice, softmaxLseDevice,
-                        qSeqDevice, kvSeqDevice, workspaceDevice, tilingDevice);
-                } else {
-                    SplitFuse::FAInfer<bfloat16_t, bfloat16_t, float, true, FaiKenel::MaskType::NO_MASK, FaiKenel::inputLayout::BSND, Catlass::Epilogue::LseModeT::OUT_ONLY><<<launchBlockDim, nullptr, aclStream>>>(
-                        fftsAddr, qDevice, kDevice, vDevice, maskDevice, blockTableDevice, oDevice, softmaxLseDevice,
-                        qSeqDevice, kvSeqDevice, workspaceDevice, tilingDevice);
-                }
-            }
-        } else {
-            if (is_causal) {
-                SplitFuse::FAInfer<bfloat16_t, bfloat16_t, float, false, FaiKenel::MaskType::MASK_CAUSAL, FaiKenel::inputLayout::BSND, Catlass::Epilogue::LseModeT::OUT_ONLY><<<launchBlockDim, nullptr, aclStream>>>(
-                        fftsAddr, qDevice, kDevice, vDevice, maskDevice, blockTableDevice, oDevice, softmaxLseDevice,
-                        qSeqDevice, kvSeqDevice, workspaceDevice, tilingDevice);
-            } else {
-                SplitFuse::FAInfer<bfloat16_t, bfloat16_t, float, false, FaiKenel::MaskType::NO_MASK, FaiKenel::inputLayout::BSND, Catlass::Epilogue::LseModeT::OUT_ONLY><<<launchBlockDim, nullptr, aclStream>>>(
-                        fftsAddr, qDevice, kDevice, vDevice, maskDevice, blockTableDevice, oDevice, softmaxLseDevice,
-                        qSeqDevice, kvSeqDevice, workspaceDevice, tilingDevice);
-            }
-        }
-    } else {
-        if (paged_KV) {
-            if (is_causal) {
-                if (flashDecodeFlag) {
-                    SplitFuse::FAInfer<half, half, float, true, FaiKenel::MaskType::MASK_CAUSAL, FaiKenel::inputLayout::BSND, Catlass::Epilogue::LseModeT::OUT_ONLY, true><<<launchBlockDim, nullptr, aclStream>>>(
-                        fftsAddr, qDevice, kDevice, vDevice, maskDevice, blockTableDevice, oDevice, softmaxLseDevice,
-                        qSeqDevice, kvSeqDevice, workspaceDevice, tilingDevice);
-                } else {
-                    SplitFuse::FAInfer<half, half, float, true, FaiKenel::MaskType::MASK_CAUSAL, FaiKenel::inputLayout::BSND, Catlass::Epilogue::LseModeT::OUT_ONLY><<<launchBlockDim, nullptr, aclStream>>>(
-                        fftsAddr, qDevice, kDevice, vDevice, maskDevice, blockTableDevice, oDevice, softmaxLseDevice,
-                        qSeqDevice, kvSeqDevice, workspaceDevice, tilingDevice);
-                }
-            } else {
-                if (flashDecodeFlag) {
-                    SplitFuse::FAInfer<half, half, float, true, FaiKenel::MaskType::NO_MASK, FaiKenel::inputLayout::BSND, Catlass::Epilogue::LseModeT::OUT_ONLY, true><<<launchBlockDim, nullptr, aclStream>>>(
-                        fftsAddr, qDevice, kDevice, vDevice, maskDevice, blockTableDevice, oDevice, softmaxLseDevice,
-                        qSeqDevice, kvSeqDevice, workspaceDevice, tilingDevice);
-                } else {
-                    SplitFuse::FAInfer<half, half, float, true, FaiKenel::MaskType::NO_MASK, FaiKenel::inputLayout::BSND, Catlass::Epilogue::LseModeT::OUT_ONLY><<<launchBlockDim, nullptr, aclStream>>>(
-                        fftsAddr, qDevice, kDevice, vDevice, maskDevice, blockTableDevice, oDevice, softmaxLseDevice,
-                        qSeqDevice, kvSeqDevice, workspaceDevice, tilingDevice);
-                }
-            }
-        } else {
-            if (is_causal) {
-                SplitFuse::FAInfer<half, half, float, false, FaiKenel::MaskType::MASK_CAUSAL, FaiKenel::inputLayout::BSND, Catlass::Epilogue::LseModeT::OUT_ONLY><<<launchBlockDim, nullptr, aclStream>>>(
-                        fftsAddr, qDevice, kDevice, vDevice, maskDevice, blockTableDevice, oDevice, softmaxLseDevice,
-                        qSeqDevice, kvSeqDevice, workspaceDevice, tilingDevice);
-            } else {
-                SplitFuse::FAInfer<half, half, float, false, FaiKenel::MaskType::NO_MASK, FaiKenel::inputLayout::BSND, Catlass::Epilogue::LseModeT::OUT_ONLY><<<launchBlockDim, nullptr, aclStream>>>(
-                        fftsAddr, qDevice, kDevice, vDevice, maskDevice, blockTableDevice, oDevice, softmaxLseDevice,
-                        qSeqDevice, kvSeqDevice, workspaceDevice, tilingDevice);
-            }
-        }
-    }
+    // Forward kernel launches live in fwd_dispatch_{bf16,fp16}.cpp. BSND path
+    // (IS_TND=false); flash-decode is handled inside the dispatch.
+    FwdLaunchArgs fwd_args;
+    fwd_args.blockDim = launchBlockDim;
+    fwd_args.aclStream = aclStream;
+    fwd_args.fftsAddr = fftsAddr;
+    fwd_args.is_bf16 = is_bf16;
+    fwd_args.paged_KV = paged_KV;
+    fwd_args.is_causal = is_causal;
+    fwd_args.flashDecodeFlag = flashDecodeFlag;
+    fwd_args.qDevice = qDevice;
+    fwd_args.kDevice = kDevice;
+    fwd_args.vDevice = vDevice;
+    fwd_args.maskDevice = maskDevice;
+    fwd_args.blockTableDevice = blockTableDevice;
+    fwd_args.oDevice = oDevice;
+    fwd_args.softmaxLseDevice = softmaxLseDevice;
+    fwd_args.qSeqDevice = qSeqDevice;
+    fwd_args.kvSeqDevice = kvSeqDevice;
+    fwd_args.workspaceDevice = workspaceDevice;
+    fwd_args.tilingDevice = tilingDevice;
+    launch_fwd<false>(fwd_args);
     return {out, softmaxlse};
 }
 
@@ -783,33 +750,27 @@ mha_fwd(at::Tensor &q,                            // batch_size x seqlen_q x num
 
     // run kernel
     auto aclStream = c10_npu::getCurrentNPUStream().stream(false);
-    if (is_bf16) {
-        if (is_causal) {
-            SplitFuse::FAInfer<bfloat16_t, bfloat16_t, float, false, FaiKenel::MaskType::MASK_CAUSAL,
-                FaiKenel::inputLayout::BSND,
-                    Catlass::Epilogue::LseModeT::OUT_ONLY><<<blockDim, nullptr, aclStream>>>(
-                    fftsAddr, qDevice, kDevice, vDevice, maskDevice, blockTableDevice, oDevice, softmaxLseDevice,
-                    qSeqDevice, kvSeqDevice, workspaceDevice, tilingDevice);
-        } else {
-            SplitFuse::FAInfer<bfloat16_t, bfloat16_t, float, false, FaiKenel::MaskType::NO_MASK,
-                FaiKenel::inputLayout::BSND,
-                    Catlass::Epilogue::LseModeT::OUT_ONLY><<<blockDim, nullptr, aclStream>>>(
-                    fftsAddr, qDevice, kDevice, vDevice, maskDevice, blockTableDevice, oDevice, softmaxLseDevice,
-                    qSeqDevice, kvSeqDevice, workspaceDevice, tilingDevice);
-        }
-    } else {
-        if (is_causal) {
-            SplitFuse::FAInfer<half, half, float, false, FaiKenel::MaskType::MASK_CAUSAL, FaiKenel::inputLayout::BSND,
-                Catlass::Epilogue::LseModeT::OUT_ONLY><<<blockDim, nullptr, aclStream>>>(
-                    fftsAddr, qDevice, kDevice, vDevice, maskDevice, blockTableDevice, oDevice, softmaxLseDevice,
-                    qSeqDevice, kvSeqDevice, workspaceDevice, tilingDevice);
-        } else {
-            SplitFuse::FAInfer<half, half, float, false, FaiKenel::MaskType::NO_MASK, FaiKenel::inputLayout::BSND,
-                Catlass::Epilogue::LseModeT::OUT_ONLY><<<blockDim, nullptr, aclStream>>>(
-                    fftsAddr, qDevice, kDevice, vDevice, maskDevice, blockTableDevice, oDevice, softmaxLseDevice,
-                    qSeqDevice, kvSeqDevice, workspaceDevice, tilingDevice);
-        }
-    }
+    // BSND, non-paged forward (IS_TND=false, paged_KV=false, no flash-decode).
+    FwdLaunchArgs fwd_args;
+    fwd_args.blockDim = blockDim;
+    fwd_args.aclStream = aclStream;
+    fwd_args.fftsAddr = fftsAddr;
+    fwd_args.is_bf16 = is_bf16;
+    fwd_args.paged_KV = false;
+    fwd_args.is_causal = is_causal;
+    fwd_args.flashDecodeFlag = false;
+    fwd_args.qDevice = qDevice;
+    fwd_args.kDevice = kDevice;
+    fwd_args.vDevice = vDevice;
+    fwd_args.maskDevice = maskDevice;
+    fwd_args.blockTableDevice = blockTableDevice;
+    fwd_args.oDevice = oDevice;
+    fwd_args.softmaxLseDevice = softmaxLseDevice;
+    fwd_args.qSeqDevice = qSeqDevice;
+    fwd_args.kvSeqDevice = kvSeqDevice;
+    fwd_args.workspaceDevice = workspaceDevice;
+    fwd_args.tilingDevice = tilingDevice;
+    launch_fwd<false>(fwd_args);
 
     return {out, softmaxlse, p, rng_state};
 }
@@ -996,67 +957,27 @@ mha_varlen_fwd(at::Tensor &q,  // total_q x num_heads x head_size, total_q := \s
     auto tilingDevice = static_cast<uint8_t *>(const_cast<void *>(tiling_gpu_tensor.data_ptr()));
     auto softmaxLseDevice = static_cast<uint8_t *>(const_cast<void *>(softmaxlse.data_ptr()));
 
-    if (is_bf16) {
-        if (paged_KV) {
-            if (is_causal) {
-                SplitFuse::FAInfer<bfloat16_t, bfloat16_t, float, true, FaiKenel::MaskType::MASK_CAUSAL,
-                    FaiKenel::inputLayout::TND, Catlass::Epilogue::LseModeT::OUT_ONLY>
-                <<<blockDim, nullptr, aclStream>>>(
-                        fftsAddr, qDevice, kDevice, vDevice, maskDevice, blockTableDevice, oDevice, softmaxLseDevice,
-                        qSeqDevice, kvSeqDevice, workspaceDevice, tilingDevice);
-            } else {
-                SplitFuse::FAInfer<bfloat16_t, bfloat16_t, float, true, FaiKenel::MaskType::NO_MASK,
-                    FaiKenel::inputLayout::TND, Catlass::Epilogue::LseModeT::OUT_ONLY>
-                <<<blockDim, nullptr, aclStream>>>(
-                        fftsAddr, qDevice, kDevice, vDevice, maskDevice, blockTableDevice, oDevice, softmaxLseDevice,
-                        qSeqDevice, kvSeqDevice, workspaceDevice, tilingDevice);
-            }
-        } else {
-            if (is_causal) {
-                SplitFuse::FAInfer<bfloat16_t, bfloat16_t, float, false, FaiKenel::MaskType::MASK_CAUSAL,
-                    FaiKenel::inputLayout::TND, Catlass::Epilogue::LseModeT::OUT_ONLY>
-                <<<blockDim, nullptr, aclStream>>>(
-                        fftsAddr, qDevice, kDevice, vDevice, maskDevice, blockTableDevice, oDevice, softmaxLseDevice,
-                        qSeqDevice, kvSeqDevice, workspaceDevice, tilingDevice);
-            } else {
-                SplitFuse::FAInfer<bfloat16_t, bfloat16_t, float, false, FaiKenel::MaskType::NO_MASK,
-                    FaiKenel::inputLayout::TND, Catlass::Epilogue::LseModeT::OUT_ONLY>
-                <<<blockDim, nullptr, aclStream>>>(
-                        fftsAddr, qDevice, kDevice, vDevice, maskDevice, blockTableDevice, oDevice, softmaxLseDevice,
-                        qSeqDevice, kvSeqDevice, workspaceDevice, tilingDevice);
-            }
-        }
-    } else {
-        if (paged_KV) {
-            if (is_causal) {
-                SplitFuse::FAInfer<half, half, float, true, FaiKenel::MaskType::MASK_CAUSAL, FaiKenel::inputLayout::TND,
-                    Catlass::Epilogue::LseModeT::OUT_ONLY>
-                <<<blockDim, nullptr, aclStream>>>(
-                        fftsAddr, qDevice, kDevice, vDevice, maskDevice, blockTableDevice, oDevice, softmaxLseDevice,
-                        qSeqDevice, kvSeqDevice, workspaceDevice, tilingDevice);
-            } else {
-                SplitFuse::FAInfer<half, half, float, true, FaiKenel::MaskType::NO_MASK, FaiKenel::inputLayout::TND,
-                    Catlass::Epilogue::LseModeT::OUT_ONLY>
-                <<<blockDim, nullptr, aclStream>>>(
-                        fftsAddr, qDevice, kDevice, vDevice, maskDevice, blockTableDevice, oDevice, softmaxLseDevice,
-                        qSeqDevice, kvSeqDevice, workspaceDevice, tilingDevice);
-            }
-        } else {
-            if (is_causal) {
-                SplitFuse::FAInfer<half, half, float, false, FaiKenel::MaskType::MASK_CAUSAL,
-                    FaiKenel::inputLayout::TND, Catlass::Epilogue::LseModeT::OUT_ONLY>
-                <<<blockDim, nullptr, aclStream>>>(
-                        fftsAddr, qDevice, kDevice, vDevice, maskDevice, blockTableDevice, oDevice, softmaxLseDevice,
-                        qSeqDevice, kvSeqDevice, workspaceDevice, tilingDevice);
-            } else {
-                SplitFuse::FAInfer<half, half, float, false, FaiKenel::MaskType::NO_MASK, FaiKenel::inputLayout::TND,
-                    Catlass::Epilogue::LseModeT::OUT_ONLY>
-                <<<blockDim, nullptr, aclStream>>>(
-                        fftsAddr, qDevice, kDevice, vDevice, maskDevice, blockTableDevice, oDevice, softmaxLseDevice,
-                        qSeqDevice, kvSeqDevice, workspaceDevice, tilingDevice);
-            }
-        }
-    }
+    // TND forward (IS_TND=true); no flash-decode in the varlen path.
+    FwdLaunchArgs fwd_args;
+    fwd_args.blockDim = blockDim;
+    fwd_args.aclStream = aclStream;
+    fwd_args.fftsAddr = fftsAddr;
+    fwd_args.is_bf16 = is_bf16;
+    fwd_args.paged_KV = paged_KV;
+    fwd_args.is_causal = is_causal;
+    fwd_args.flashDecodeFlag = false;
+    fwd_args.qDevice = qDevice;
+    fwd_args.kDevice = kDevice;
+    fwd_args.vDevice = vDevice;
+    fwd_args.maskDevice = maskDevice;
+    fwd_args.blockTableDevice = blockTableDevice;
+    fwd_args.oDevice = oDevice;
+    fwd_args.softmaxLseDevice = softmaxLseDevice;
+    fwd_args.qSeqDevice = qSeqDevice;
+    fwd_args.kvSeqDevice = kvSeqDevice;
+    fwd_args.workspaceDevice = workspaceDevice;
+    fwd_args.tilingDevice = tilingDevice;
+    launch_fwd<true>(fwd_args);
 
     auto options = torch::TensorOptions().dtype(torch::kFloat32).device(at::Device(at::kPrivateUse1));
     at::Tensor rng_state =  torch::empty({2}, options.dtype(torch::kInt64));
@@ -1200,55 +1121,30 @@ mha_varlen_bwd(const at::Tensor &dout,                   // total_q x num_heads 
     auto dkDevice = static_cast<uint8_t *>(const_cast<void *>(dk.storage().data()));
     auto dvDevice = static_cast<uint8_t *>(const_cast<void *>(dv.storage().data()));
 
-    auto fag_varlen_opt_call = [=]() -> int {
-        #if defined(ENABLE_ASCENDC_DUMP)
-
-            uint8_t *ptrDumpDevice{nullptr};
-            aclCheck(aclrtMalloc(reinterpret_cast<void **>(&ptrDumpDevice), ALL_DUMPSIZE, ACL_MEM_MALLOC_HUGE_FIRST));
-            if (is_bf16) {
-                FAG::FAGVarlenOpt<bfloat16_t><<<blockDim, nullptr, aclStream>>>(
-                    fftsAddr, qDevice, kDevice, vDevice, dOutDevice, nullptr, nullptr, nullptr, nullptr, nullptr,
-                    attenMaskDevice, softMaxLseDevice, nullptr, outDevice, nullptr, cuSeqQlenDevice, cuSeqKvlenDevice,
-                    nullptr, nullptr, dqDevice, dkDevice, dvDevice, workspaceDevice, tilingDevice, ptrDumpDevice);
-            } else {
-                FAG::FAGVarlenOpt<half><<<blockDim, nullptr, aclStream>>>(
-                    fftsAddr, qDevice, kDevice, vDevice, dOutDevice, nullptr, nullptr, nullptr, nullptr, nullptr,
-                    attenMaskDevice, softMaxLseDevice, nullptr, outDevice, nullptr, cuSeqQlenDevice, cuSeqKvlenDevice,
-                    nullptr, nullptr, dqDevice, dkDevice, dvDevice, workspaceDevice, tilingDevice, ptrDumpDevice);
-            }
-            aclCheck(aclrtSynchronizeStream(aclStream));
-            Adx::AdumpPrintWorkSpace(ptrDumpDevice, ALL_DUMPSIZE, aclStream, "device_fag");
-            aclCheck(aclrtFree(ptrDumpDevice));
-        #else
-            if (is_bf16) {
-                if (is_causal) {
-                    FAG::FAGVarlenOpt<bfloat16_t, MaskType::MASK_CAUSAL, InputLayout::TND><<<blockDim, nullptr, aclStream>>>(
-                        fftsAddr, qDevice, kDevice, vDevice, dOutDevice, nullptr, nullptr, nullptr, nullptr, nullptr,
-                        attenMaskDevice, softMaxLseDevice, nullptr, outDevice, nullptr, cuSeqQlenDevice, cuSeqKvlenDevice,
-                        nullptr, nullptr, dqDevice, dkDevice, dvDevice, workspaceDevice, tilingDevice, nullptr);
-                } else {
-                    FAG::FAGVarlenOpt<bfloat16_t, MaskType::NO_MASK, InputLayout::TND><<<blockDim, nullptr, aclStream>>>(
-                        fftsAddr, qDevice, kDevice, vDevice, dOutDevice, nullptr, nullptr, nullptr, nullptr, nullptr,
-                        attenMaskDevice, softMaxLseDevice, nullptr, outDevice, nullptr, cuSeqQlenDevice, cuSeqKvlenDevice,
-                        nullptr, nullptr, dqDevice, dkDevice, dvDevice, workspaceDevice, tilingDevice, nullptr);
-                }
-            } else {
-                if (is_causal) {
-                    FAG::FAGVarlenOpt<half, MaskType::MASK_CAUSAL, InputLayout::TND><<<blockDim, nullptr, aclStream>>>(
-                        fftsAddr, qDevice, kDevice, vDevice, dOutDevice, nullptr, nullptr, nullptr, nullptr, nullptr,
-                        attenMaskDevice, softMaxLseDevice, nullptr, outDevice, nullptr, cuSeqQlenDevice, cuSeqKvlenDevice,
-                        nullptr, nullptr, dqDevice, dkDevice, dvDevice, workspaceDevice, tilingDevice, nullptr);
-                } else {
-                    FAG::FAGVarlenOpt<half, MaskType::NO_MASK, InputLayout::TND><<<blockDim, nullptr, aclStream>>>(
-                        fftsAddr, qDevice, kDevice, vDevice, dOutDevice, nullptr, nullptr, nullptr, nullptr, nullptr,
-                        attenMaskDevice, softMaxLseDevice, nullptr, outDevice, nullptr, cuSeqQlenDevice, cuSeqKvlenDevice,
-                        nullptr, nullptr, dqDevice, dkDevice, dvDevice, workspaceDevice, tilingDevice, nullptr);
-                }
-            }
-        #endif
-        return 0;
-    };
-    at_npu::native::OpCommand::RunOpApiV2("ascendc_fag", fag_varlen_opt_call);
+    // Varlen backward kernel launches live in varlen_bwd_dispatch_{bf16,fp16}.cpp
+    // (the ENABLE_ASCENDC_DUMP path and the OpCommand wrapper are handled inside
+    // the dispatch).
+    VarlenBwdLaunchArgs vb_args;
+    vb_args.blockDim = blockDim;
+    vb_args.aclStream = aclStream;
+    vb_args.fftsAddr = fftsAddr;
+    vb_args.is_bf16 = is_bf16;
+    vb_args.is_causal = is_causal;
+    vb_args.qDevice = qDevice;
+    vb_args.kDevice = kDevice;
+    vb_args.vDevice = vDevice;
+    vb_args.dOutDevice = dOutDevice;
+    vb_args.attenMaskDevice = attenMaskDevice;
+    vb_args.softMaxLseDevice = softMaxLseDevice;
+    vb_args.outDevice = outDevice;
+    vb_args.cuSeqQlenDevice = cuSeqQlenDevice;
+    vb_args.cuSeqKvlenDevice = cuSeqKvlenDevice;
+    vb_args.dqDevice = dqDevice;
+    vb_args.dkDevice = dkDevice;
+    vb_args.dvDevice = dvDevice;
+    vb_args.workspaceDevice = workspaceDevice;
+    vb_args.tilingDevice = tilingDevice;
+    launch_varlen_bwd(vb_args);
 
     auto opts = q.options();
     auto softmax_d = torch::empty({fagInfo.seqQShapeSize, nheads, max_seqlen_q}, opts.dtype(at::kFloat));

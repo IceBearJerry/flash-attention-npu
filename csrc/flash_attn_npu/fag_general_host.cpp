@@ -8,8 +8,12 @@
 #include "tiling/platform/platform_ascendc.h"
 #include "../flash_attn_npu_v3/fag_tiling.h"
 #include "../flash_attn_npu_v3/fag_tiling.cpp"
-#include "../flash_attn_npu_v3/fag_kernel.cpp"
-#include "fag_general_launch.hpp"
+// The FAGGeneral kernel instantiations live in per-dtype dispatch TUs
+// (fag_general_dispatch_{bf16,fp16}.cpp), compiled in parallel. This host
+// function only sets up tiling/workspace and hands the raw pointers to
+// launch_fag_general_dispatch(); it no longer pulls in fag_kernel.cpp.
+#include "runtime/rt_ffts.h"          // rtGetC2cCtrlAddr (was via fag_general_launch.hpp)
+#include "fag_general_dispatch.hpp"
 
 std::vector<at::Tensor> launch_fag_general(
     const at::Tensor &dout,
@@ -189,16 +193,37 @@ std::vector<at::Tensor> launch_fag_general(
         cuSeqKvlenDevice = static_cast<uint8_t *>(const_cast<void *>(seqlenk_gpu_tensor.data_ptr()));
     }
 
+    // FAGGeneral backward kernel launches live in
+    // fag_general_dispatch_<dtype>_<layout>.cpp. gen_args.is_causal carries
+    // main's has_attn_mask flag (causal OR local), which selects the kernel's
+    // IS_ATTEN_MASK template param — same role as LaunchFAGGeneralKernel's 2nd
+    // arg. The OpCommand ("ascendc_fag") wrapper is applied inside the dispatch.
+    FagGeneralLaunchArgs gen_args;
+    gen_args.blockDim = blockDim;
+    gen_args.aclStream = aclStream;
+    gen_args.fftsAddr = fftsAddr;
+    gen_args.is_causal = has_attn_mask;
+    gen_args.deterministic = deterministic;
+    gen_args.qk_headdim_kernel = qk_headdim_kernel;
+    gen_args.dOutDevice = dOutDevice;
+    gen_args.qDevice = qDevice;
+    gen_args.kDevice = kDevice;
+    gen_args.vDevice = vDevice;
+    gen_args.outDevice = outDevice;
+    gen_args.attenMaskDevice = attenMaskDevice;
+    gen_args.softMaxLseDevice = softMaxLseDevice;
+    gen_args.cuSeqQlenDevice = cuSeqQlenDevice;
+    gen_args.cuSeqKvlenDevice = cuSeqKvlenDevice;
+    gen_args.dqDevice = dqDevice;
+    gen_args.dkDevice = dkDevice;
+    gen_args.dvDevice = dvDevice;
+    gen_args.workspaceDevice = workspaceDevice;
+    gen_args.tilingDevice = tilingDevice;
+
     if (is_varlen_q) {
-        LaunchFAGGeneralKernel<std::integral_constant<uint32_t, static_cast<uint32_t>(TND)>>(
-            is_bf16, has_attn_mask, deterministic, qk_headdim_kernel, blockDim, aclStream, fftsAddr,
-            dOutDevice, qDevice, kDevice, vDevice, outDevice, attenMaskDevice, softMaxLseDevice,
-            cuSeqQlenDevice, cuSeqKvlenDevice, dqDevice, dkDevice, dvDevice, workspaceDevice, tilingDevice);
+        launch_fag_general_dispatch<TND>(is_bf16, gen_args);
     } else {
-        LaunchFAGGeneralKernel<std::integral_constant<uint32_t, static_cast<uint32_t>(BSND)>>(
-            is_bf16, has_attn_mask, deterministic, qk_headdim_kernel, blockDim, aclStream, fftsAddr,
-            dOutDevice, qDevice, kDevice, vDevice, outDevice, attenMaskDevice, softMaxLseDevice,
-            cuSeqQlenDevice, cuSeqKvlenDevice, dqDevice, dkDevice, dvDevice, workspaceDevice, tilingDevice);
+        launch_fag_general_dispatch<BSND>(is_bf16, gen_args);
     }
 
     auto opts = q.options();

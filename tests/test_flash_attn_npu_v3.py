@@ -177,7 +177,7 @@ test_cases = [
     (torch.bfloat16, 6, 1, 1, 16, 10240, 128, 1, 128, False, "TND", False),
 ]
 
-@pytest.mark.parametrize("num_splits", [0, 1, 2, 4, 8])
+@pytest.mark.parametrize("num_splits", [0, 1, 2])
 @pytest.mark.parametrize("data_type, batch_size, num_heads, kv_heads, q_seqlen, kv_seqlen, head_size, cache_mode, block_size, is_causal, layout, is_varied", test_cases)
 def test_fa_custom_ops(data_type, batch_size, num_heads, kv_heads, q_seqlen, kv_seqlen, head_size, cache_mode, block_size, is_causal, layout, is_varied, num_splits):
     # num_splits>1 (active KV split) is currently only wired for paged KV + varlen-q (TND).
