@@ -1215,7 +1215,11 @@ mha_varlen_bwd(const at::Tensor &dout,                   // total_q x num_heads 
     vb_args.dvDevice = dvDevice;
     vb_args.workspaceDevice = workspaceDevice;
     vb_args.tilingDevice = tilingDevice;
-    launch_varlen_bwd(vb_args);
+    if (vb_args.is_bf16) {
+        launch_varlen_bwd_impl<bfloat16_t>(vb_args);
+    } else {
+        launch_varlen_bwd_impl<half>(vb_args);
+    }
 
     auto opts = q.options();
     auto softmax_d = torch::empty({fagInfo.seqQShapeSize, nheads, max_seqlen_q}, opts.dtype(at::kFloat));

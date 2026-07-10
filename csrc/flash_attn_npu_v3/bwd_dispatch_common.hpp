@@ -107,7 +107,7 @@ void bwd_dispatch_run(const BwdLaunchArgs &a) {
     (void)blockDim; (void)aclStream; (void)fftsAddr; (void)has_attn_mask;
     (void)deterministic; (void)qk_headdim_kernel;
 
-    auto launch_fag_general_kernel = [&]() -> int {
+    auto launch_fag_general_kernel = [=]() -> int {
         if (has_attn_mask) {
             if (deterministic) {
                 BWD_LAUNCH_HD(DType, 1, 1);

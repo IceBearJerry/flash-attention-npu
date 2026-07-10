@@ -10,11 +10,6 @@
 // autogen/generate_kernels.py) so the 6 FAGVarlenOpt instantiations compile in
 // parallel. (Always TND layout, so no layout axis is generated.)
 //
-// flash_api.cpp computes all host-side setup and hands the raw device pointers /
-// scalars to launch_varlen_bwd(); the dispatch selects dtype / causal and
-// launches the matching FAGVarlenOpt<...> (always TND layout). The
-// ENABLE_ASCENDC_DUMP path is handled inside the dispatch so the host function
-// stays dump-agnostic.
 
 #pragma once
 
@@ -48,12 +43,3 @@ struct VarlenBwdLaunchArgs {
 // plus the dump variant). (Always TND layout, so no layout axis is generated.)
 template <typename DType>
 void launch_varlen_bwd_impl(const VarlenBwdLaunchArgs &a);
-
-// Runtime entry: pick dtype, dispatch to the matching dtype TU.
-inline void launch_varlen_bwd(const VarlenBwdLaunchArgs &a) {
-    if (a.is_bf16) {
-        launch_varlen_bwd_impl<bfloat16_t>(a);
-    } else {
-        launch_varlen_bwd_impl<half>(a);
-    }
-}

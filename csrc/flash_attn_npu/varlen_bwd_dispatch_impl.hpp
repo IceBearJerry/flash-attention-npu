@@ -37,7 +37,7 @@ template <typename DType>
 void launch_varlen_bwd_impl(const VarlenBwdLaunchArgs &a) {
     // Wrap the launch tree in an OpCommand context, matching main's
     // mha_varlen_bwd (RunOpApiV2("ascendc_fag", ...)).
-    auto fag_varlen_opt_call = [&a]() -> int {
+    auto fag_varlen_opt_call = [=]() -> int {
         const uint32_t blockDim = a.blockDim;
         const aclrtStream aclStream = a.aclStream;
         const uint64_t fftsAddr = a.fftsAddr;

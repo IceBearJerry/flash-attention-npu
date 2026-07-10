@@ -70,7 +70,7 @@ template <typename DType, uint32_t kInputLayout>
 void launch_fag_general_dispatch_impl(const FagGeneralLaunchArgs &a) {
     // Wrap the launch tree in an OpCommand context, matching main's
     // fag_general_launch.hpp (RunOpApiV2("ascendc_fag", ...)).
-    auto fag_general_call = [&a]() -> int {
+    auto fag_general_call = [=]() -> int {
         const uint32_t hd = a.qk_headdim_kernel;
         if (a.is_causal) {
             if (a.deterministic) {
