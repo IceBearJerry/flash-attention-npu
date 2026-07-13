@@ -140,6 +140,11 @@ public:
                 LSE_OUT_INI,
                 (end - start) * FLOAT_BLOCK_SIZE
             );
+            AscendC::Duplicate(
+                lse32_ubuf_tensor[start],
+                LSE_OUT_INI,
+                (end - start)
+            );
         }
         if (qNThisSubBlock == 0U && delEndRow != qSeqlen && qNSubBlockStartOffset < delEndRow) {
             uint32_t rowStart = qNSubBlockStartOffset;
@@ -150,6 +155,11 @@ public:
                 tvUbTensor[start * FLOAT_BLOCK_SIZE],
                 LSE_OUT_INI,
                 (end - start) * FLOAT_BLOCK_SIZE
+            );
+            AscendC::Duplicate(
+                lse32_ubuf_tensor[start],
+                LSE_OUT_INI,
+                (end - start)
             );
         }
         if (qNThisSubBlock != 0U && delStartRow != 0 && qNSubBlockEnbdOffset >= delStartRow) {
@@ -537,35 +547,39 @@ public:
                     AscendC::SetFlag<AscendC::HardEvent::V_MTE3>(EVENT_ID4);
                     AscendC::WaitFlag<AscendC::HardEvent::V_MTE3>(EVENT_ID4);
 
-                    if (qNThisSubBlock == 0U) {
-                        if (splitParams.isSplitkv) {
+                    if (splitParams.isSplitkv) {
+                        // isSplitkv: per-head strided write to token-major gCombineLse. UNCHANGED.
+                        if (qNThisSubBlock == 0U) {
                             AscendC::DataCopyPad(
                                 splitParams.gCombineLse, tvUbTensor,
                                 AscendC::DataCopyExtParams(
                                     totalRowNum, sizeof(float), 0, (qHeads_gmlse - 1) * sizeof(float), 0));
                         } else {
-                            AscendC::DataCopyPad(
-                                gLse, tvUbTensor,
-                                AscendC::DataCopyExtParams(totalRowNum, sizeof(float), 0, 0, 0));
-                        }
-                    } else {
-                        for (uint32_t qNIdx = 0; qNIdx < qNThisSubBlock; qNIdx++) {
-                            if (splitParams.isSplitkv) {
+                            for (uint32_t qNIdx = 0; qNIdx < qNThisSubBlock; qNIdx++) {
                                 AscendC::DataCopyPad(
                                     splitParams.gCombineLse[qNIdx],
                                     tvUbTensor[qNIdx * qSBlockSize * FLOAT_BLOCK_SIZE],
                                     AscendC::DataCopyExtParams(
                                         qSBlockSize, sizeof(float), 0, (qHeads_gmlse - 1) * sizeof(float), 0));
-                            } else {
-                                // Final LSE is head-major (num_heads, total_q): head stride =
-                                // totalQTokens. The old `qNIdx * qSBlockSize` used the per-tile q
-                                // count as the head stride, packing heads too tightly whenever the
-                                // tile covers < totalQTokens q-tokens, so heads landed at the wrong
-                                // (head,q) and the true slots stayed unwritten (+inf).
+                            }
+                        }
+                    } else {
+                        if (qNThisSubBlock == 0U) {
+                            // single head: its tokens are contiguous in BNS/NT -> plain lse32 burst.
+                            AscendC::DataCopyPad(
+                                gLse, lse32_ubuf_tensor,
+                                AscendC::DataCopyExtParams(1, totalRowNum * sizeof(float), 0, 0, 0));
+                        } else {
+                            // multi-head: per-token gather (srcStride) + scatter (dstStride).
+                            uint32_t lseHeadStrideGm = layoutLse.stride(0);  // S_q, BNS/NT head stride
+                            for (uint32_t sIdx = 0; sIdx < qSBlockSize; sIdx++) {
                                 AscendC::DataCopyPad(
-                                    gLse[qNIdx * layoutLse.stride(0)],
-                                    tvUbTensor[qNIdx * qSBlockSize * FLOAT_BLOCK_SIZE],
-                                    AscendC::DataCopyExtParams(qSBlockSize, sizeof(float), 0, 0, 0));
+                                    gLse[sIdx],
+                                    tvUbTensor[sIdx * FLOAT_BLOCK_SIZE],
+                                    AscendC::DataCopyExtParams(
+                                        qNThisSubBlock, sizeof(float),
+                                        qSBlockSize - 1,
+                                        (lseHeadStrideGm - 1) * sizeof(float), 0));
                             }
                         }
                     }

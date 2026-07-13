@@ -217,23 +217,21 @@ public:
                 uint32_t gmLseBase = batchBase + headBase * headStride + qPos;
                 uint32_t lseDstStride = (headStride - 1) * sizeof(float);
 
+                AscendC::Brcb(loFloatUbTensor.ReinterpretCast<uint32_t>(),
+                              tsUbTensor.ReinterpretCast<uint32_t>(),
+                              (lseBlockAlign + FLOAT_PER_BLOCK - 1) / FLOAT_PER_BLOCK,
+                              AscendC::BrcbRepeatParams(1, 8));
+                AscendC::PipeBarrier<PIPE_V>();
                 if (q_len == 1) {
                     AscendC::SetFlag<AscendC::HardEvent::V_MTE3>(EVENT_ID3);
                     AscendC::WaitFlag<AscendC::HardEvent::V_MTE3>(EVENT_ID3);
 
                     AscendC::DataCopyPad(
-                        oLseGmTensor[gmLseBase], tsUbTensor,
+                        oLseGmTensor[gmLseBase], loFloatUbTensor,
                         AscendC::DataCopyExtParams(lseBlock, sizeof(float), 0, lseDstStride, 0));
                 } else {
-                    AscendC::Brcb(loFloatUbTensor.ReinterpretCast<uint32_t>(),
-                                  tsUbTensor.ReinterpretCast<uint32_t>(),
-                                  (lseBlockAlign + FLOAT_PER_BLOCK - 1) / FLOAT_PER_BLOCK,
-                                  AscendC::BrcbRepeatParams(1, 8));
-                    AscendC::PipeBarrier<PIPE_V>();
-
                     AscendC::SetFlag<AscendC::HardEvent::V_MTE3>(EVENT_ID3);
                     AscendC::WaitFlag<AscendC::HardEvent::V_MTE3>(EVENT_ID3);
-
                     uint32_t qTile = lseBlock / n_len;
                     for (uint32_t qi = 0; qi < qTile; ++qi) {
                         AscendC::DataCopyPad(
