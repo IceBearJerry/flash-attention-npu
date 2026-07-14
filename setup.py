@@ -41,14 +41,20 @@ FORCE_BUILD = os.getenv("FLASH_ATTENTION_FORCE_BUILD", "FALSE") == "TRUE"
 SKIP_NPU_BUILD = os.getenv("FLASH_ATTENTION_SKIP_NPU_BUILD", "FALSE") == "TRUE"
 # FLASH_ATTN_BUILD_VERSION selects which API generations to build:
 #   "v2"   build flash_attn_npu_2          (910B/C only;)
-#   "v3"   build BOTH v3 backends into one wheel:
+#   "v3"   build the v3 backends selected by FLASH_ATTN_BUILD_NPU:
 #            flash_attn_npu_3       (Ascend 910B/C, csrc/)
 #            flash_attn_npu_950_3   (Ascend 950,    csrc_AscendC950/)
-#          Runtime dispatch in flash_attn_npu_v3/__init__.py picks the
-#          matching backend per host via torch_npu.npu.get_device_name(),
-#          so a single wheel runs on both 910 and 950.
-#   "all"  build v2 + both v3 backends.
+#   "all"  build v2 + the selected v3 backends.
+# FLASH_ATTN_BUILD_NPU selects which NPU hardware backends to build:
+#   "910"  only Ascend 910B/C backends (flash_attn_npu_2, flash_attn_npu_3)
+#   "950"  only the Ascend 950 backend  (flash_attn_npu_950_3)
+#   "all"  build every backend whose API generation is selected above
+#          (default). Runtime dispatch in flash_attn_npu_v3/__init__.py
+#          picks the matching backend per host via
+#          torch_npu.npu.get_device_name(), so an "all" wheel runs on
+#          both 910 and 950.
 BUILD_VERSION = os.getenv("FLASH_ATTN_BUILD_VERSION", "all").lower()
+BUILD_NPU = os.getenv("FLASH_ATTN_BUILD_NPU", "all").lower()
 
 def get_platform():
     """
@@ -302,10 +308,12 @@ class BishengBuildExt(build_ext):
             self.extensions = saved
 
 ext_modules = []
+build_910 = BUILD_NPU in ("910", "all")
+build_950 = BUILD_NPU in ("950", "all")
 catlass_needed = []
-if BUILD_VERSION in ("v2", "v3", "all"):
+if build_910 and BUILD_VERSION in ("v2", "v3", "all"):
     catlass_needed.append("csrc/catlass")
-if BUILD_VERSION in ("v3", "all"):
+if build_950 and BUILD_VERSION in ("v3", "all"):
     catlass_needed.append("csrc_AscendC950/catlass")
 
 if os.path.isdir(".git") and catlass_needed:
@@ -345,23 +353,23 @@ source_files_950_v3 += glob.glob(os.path.join(this_dir, "csrc_AscendC950/flash_a
 source_files_950_v3 += glob.glob(os.path.join(this_dir, "csrc_AscendC950/flash_attn_npu_v3", "autogen", "*.cpp"), recursive=True)
 
 if not SKIP_NPU_BUILD:
-    if BUILD_VERSION in ("v2", "all"):
+    if build_910 and BUILD_VERSION in ("v2", "all"):
         ext_modules.append(Extension(
             name="flash_attn_npu_2",
             sources=source_files,
             language="c++",
         ))
 
-    if BUILD_VERSION in ("v3", "all"):
+    if BUILD_VERSION in ("v3", "all") and build_910:
         ext_modules.append(Extension(
             name="flash_attn_npu_3",
             sources=source_files_v3,
             language="c++",
         ))
-
+    if BUILD_VERSION in ("v3", "all") and build_950:
         if not source_files_950_v3:
             raise RuntimeError(
-                "FLASH_ATTN_BUILD_VERSION=v3 requires csrc_AscendC950/flash_attn_npu_v3/flash_api.cpp;"
+                "FLASH_ATTN_BUILD_NPU=950 or FLASH_ATTN_BUILD_VERSION=v3 requires csrc_AscendC950/flash_attn_npu_v3/flash_api.cpp;"
             )
         ext_modules.append(Extension(
             name="flash_attn_npu_950_3",
@@ -369,6 +377,13 @@ if not SKIP_NPU_BUILD:
             language="c++",
         ))
 
+    if not ext_modules:
+        raise RuntimeError(
+            f"FLASH_ATTN_BUILD_VERSION={BUILD_VERSION!r} + "
+            f"FLASH_ATTN_BUILD_NPU={BUILD_NPU!r} selects no extensions to "
+            f"build (e.g. v2 has no 950 backend). Set FLASH_ATTN_BUILD_NPU "
+            f"to 910, 950, or all."
+        )
 
 def get_package_version():
     with open(Path(this_dir) / "flash_attn_npu" / "__init__.py", "r") as f:

@@ -562,7 +562,7 @@ namespace SplitFuse {
                 int64_t diffS = kvSeqlen - qSeqlen;
                 diffS = (diffS < 0) ? 0 : diffS;
                 noSkipKvS = (qSBlockIdx + 1U) * curQSBlockTile + diffS;
-                noSkipKvS = AscendC::Std::min((uint32_t)kvSeqlen, noSkipKvS);
+                noSkipKvS = AscendC::Std::min((int64_t)kvSeqlen, noSkipKvS);
                 kvSLoopNumTotal = CeilDiv(noSkipKvS, MAX_KV_STACK_LEN);
             } else if (maskType == 2U) {
                 int32_t leftPointwindowSizeLeft = kvSeqlen;
