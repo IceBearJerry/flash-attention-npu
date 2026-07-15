@@ -58,7 +58,6 @@ SKIP_NPU_BUILD = os.getenv("FLASH_ATTENTION_SKIP_NPU_BUILD", "FALSE") == "TRUE"
 #          both 910 and 950.
 BUILD_VERSION = os.getenv("FLASH_ATTN_BUILD_VERSION", "all").lower()
 BUILD_NPU = os.getenv("FLASH_ATTN_BUILD_NPU", "all").lower()
-BUILD_NPU = os.getenv("FLASH_ATTN_BUILD_NPU", "all").lower()
 
 def get_platform():
     """
@@ -308,8 +307,6 @@ class BishengBuildExt(build_ext):
             self.extensions = saved
 
 ext_modules = []
-build_910 = BUILD_NPU in ("910", "all")
-build_950 = BUILD_NPU in ("950", "all")
 
 if os.path.isdir(".git"):
     subprocess.run(
@@ -347,21 +344,21 @@ src_arch35_v3 += glob.glob(os.path.join(this_dir, "csrc/arch35/flash_attn_npu_v3
 src_arch35_v3 += glob.glob(os.path.join(this_dir, "csrc/arch35/flash_attn_npu_v3", "autogen", "*.cpp"), recursive=True)
 
 if not SKIP_NPU_BUILD:
-    if BUILD_VERSION in ("v2", "all") and build_910:
+    if BUILD_VERSION in ("v2", "all") and BUILD_NPU in ("910", "all"):
         ext_modules.append(Extension(
             name="flash_attn_npu_arch22_v2",
             sources=src_arch22_v2,
             language="c++",
         ))
 
-    if BUILD_VERSION in ("v3", "all") and build_910:
+    if BUILD_VERSION in ("v3", "all") and BUILD_NPU in ("910", "all"):
         ext_modules.append(Extension(
             name="flash_attn_npu_arch22_v3",
             sources=src_arch22_v3,
             language="c++",
         ))
 
-    if BUILD_VERSION in ("v3", "all") and build_950:
+    if BUILD_VERSION in ("v3", "all") and BUILD_NPU in ("950", "all"):
         if not src_arch35_v3:
             raise RuntimeError(
                 "FLASH_ATTN_BUILD_NPU=950 or FLASH_ATTN_BUILD_VERSION=v3 requires csrc/arch35/flash_attn_npu_v3/flash_api.cpp;"

@@ -1,10 +1,7 @@
-recursive-include csrc/catlass *.h *.hpp *.cpp
-prune csrc/catlass/tests
-prune csrc/catlass/examples
-prune csrc/catlass/benchmarks
+global-exclude .*
+prune .github
 
-recursive-include csrc/arch22/flash_attn_npu_v2 *.h *.hpp *.cpp
-recursive-include csrc/arch22/flash_attn_npu_v3 *.h *.hpp *.cpp
-
-# Ascend 950 
-recursive-include csrc/arch35/flash_attn_npu_v3 *.h *.hpp *.cpp
+recursive-include csrc/arch22 *.h *.hpp *.cpp *.aicpu
+recursive-include csrc/arch35 *.h *.hpp *.cpp *.aicpu
+recursive-include csrc/catlass/include *.h *.hpp *.cpp
+recursive-include csrc/catlass/tools/library *.h *.hpp *.cpp
