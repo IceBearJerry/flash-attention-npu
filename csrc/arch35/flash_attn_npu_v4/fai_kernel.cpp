@@ -19,8 +19,15 @@
 
 #include "catlass/arch/cross_core_sync.hpp"
 #include "catlass/arch/resource.hpp"
+#define EPILOGUE_BLOCK_BLOCK_EPILOGUE_FLASH_ATTENTION_SOFTMAX_HIGH_PREC_HPP
+#define EPILOGUE_BLOCK_BLOCK_EPILOGUE_FLASH_ATTENTION_SOFTMAX_LOW_PREC_HPP
+#define EPILOGUE_BLOCK_BLOCK_EPILOGUE_FLASH_ATTENTION_RESCALE_O_HPP
 #include "catlass/epilogue/block/block_epilogue.hpp"
 #include "catlass/epilogue/dispatch_policy.hpp"
+
+#include "online_softmax_high_prec.hpp"
+#include "online_softmax_low_prec.hpp"
+#include "rescale_o.hpp"
 
 #include "tla/tensor.hpp"
 #include "tla/layout.hpp"
@@ -198,7 +205,12 @@ public:
         int64_t strideO = 0;
         int64_t strideK = 0;
         int64_t strideV = 0;
-        int64_t kvNumTokens = gActualKvseqlen.GetValue(batch_ - 1); // used for TND_NZ
+        int64_t kvNumTokens;
+        if constexpr (kvFormat == Format::TND && kvcacheType == CacheMode::normalCache) {
+            kvNumTokens = gActualKvseqlen.GetValue(batch_);
+        } else {
+            kvNumTokens = gActualKvseqlen.GetValue(batch_ - 1);
+        }
 
         strideQ = qHeads_ * embed_;
         if constexpr (cacheLayout == CacheLayout::nd) {
@@ -221,13 +233,13 @@ public:
         uint32_t curBatch = 0;
         int64_t qSeqlen = faiTilingData->maxQSeqlen;
         int64_t kvSeqlen = gActualKvseqlen.GetValue(curBatch);
-        uint32_t curTotalTaskNum = firstBatchTaskNum_;
         if constexpr (qFormat == Format::TND) {
             qSeqlen = static_cast<int64_t>(gActualQseqlen.GetValue(curBatch + 1) - gActualQseqlen.GetValue(curBatch));
         }
         if constexpr (kvFormat == Format::TND && kvcacheType == CacheMode::normalCache) {
             kvSeqlen = static_cast<int64_t>(gActualKvseqlen.GetValue(curBatch + 1) - gActualKvseqlen.GetValue(curBatch));
         }
+        uint32_t curTotalTaskNum = firstBatchTaskNum_;
         for (uint32_t taskIdx = coreIdx; taskIdx < totalTaskNum_; taskIdx += coreNum) {
             while (taskIdx >= curTotalTaskNum) {
                 ++curBatch;
