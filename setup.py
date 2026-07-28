@@ -44,17 +44,22 @@ SKIP_NPU_BUILD = os.getenv("FLASH_ATTENTION_SKIP_NPU_BUILD", "FALSE") == "TRUE"
 #   "v3"   build the v3 backends selected by FLASH_ATTN_BUILD_NPU:
 #            flash_attn_npu_arch22_v3    (Ascend 910B/C, csrc/arch22)
 #            flash_attn_npu_arch35_v3    (Ascend 950,    csrc/arch35)
-#          Runtime dispatch in flash_attn_npu_v3/__init__.py picks the
+#   "v4"   build the v4 backends selected by FLASH_ATTN_BUILD_NPU:
+#            flash_attn_npu_arch22_v4      (Ascend 910B/C, csrc/arch22)
+#            flash_attn_npu_arch35_v4      (Ascend 950,    csrc/arch35)
+#          Runtime dispatch in flash_attn_npu_v4/__init__.py picks the
 #          matching backend per host via torch_npu.npu.get_device_name(),
 #          so a single wheel runs on both 910 and 950.
-#   "all"  build v2 + the selected v3 backends.
+#   "all"  build v2 + v3 + the v4 backends selected by FLASH_ATTN_BUILD_NPU.
 # FLASH_ATTN_BUILD_NPU selects which NPU hardware backends to build:
-#   "910"  only Ascend 910B/C backends (flash_attn_npu_arch22_v2, flash_attn_npu_arch22_v3)
-#   "950"  only the Ascend 950 backend  (flash_attn_npu_arch35_v3)
+#   "910"  only Ascend 910B/C backends (flash_attn_npu_arch22_v2,
+#          flash_attn_npu_arch22_v3, flash_attn_npu_arch22_v4)
+#   "950"  only the Ascend 950 backends (flash_attn_npu_arch35_v3,
+#          flash_attn_npu_arch35_v4)
 #   "all"  build every backend whose API generation is selected above
-#          (default). Runtime dispatch in flash_attn_npu_v3/__init__.py
-#          picks the matching backend per host via
-#          torch_npu.npu.get_device_name(), so an "all" wheel runs on
+#          (default). Runtime dispatch in flash_attn_npu_v3/__init__.py and
+#          flash_attn_npu_v4/__init__.py picks the matching backend per host
+#          via torch_npu.npu.get_device_name(), so an "all" wheel runs on
 #          both 910 and 950.
 BUILD_VERSION = os.getenv("FLASH_ATTN_BUILD_VERSION", "all").lower()
 BUILD_NPU = os.getenv("FLASH_ATTN_BUILD_NPU", "all").lower()
@@ -74,7 +79,8 @@ def get_cann_arch_dir():
 class BishengBuildExt(build_ext):
     _toolchains = None
 
-    def _get_toolchain(self, ext_name):
+    def _get_toolchain(self, ext):
+        ext_name = ext.name
         if self._toolchains is None:
             self._toolchains = {}
         if ext_name in self._toolchains:
@@ -84,14 +90,27 @@ class BishengBuildExt(build_ext):
         if not os.path.exists(ascend_home):
             raise RuntimeError(f"ASCEND_TOOLKIT_HOME={ascend_home}")
 
-        is_arch35 = "arch35" in ext_name
+        # Determine the target arch (3510 vs 2201) and the versioned arch35
+        # include dir from the extension's first source path. v3 modules are
+        # named flash_attn_npu_arch35_v3 (sources under csrc/arch35/flash_attn_npu_v3),
+        # v4 modules are named flash_attn_npu_arch35_v4 (sources under
+        # csrc/arch35/flash_attn_npu_v4); deriving both pieces from the source
+        # path keeps the v3/v4 divergence working without hardcoding.
+        first_src = ext.sources[0] if ext.sources else ""
+        src_norm = first_src.replace("\\", "/")
+        is_arch35 = "arch35" in src_norm
         npu_arch = "dav-3510" if is_arch35 else "dav-2201"
 
         extra_includes = []
         extra_defines = []
         if is_arch35:
+            version_dir = "flash_attn_npu_v3"  # fallback
+            for part in src_norm.split("/"):
+                if part.startswith("flash_attn_npu_v"):
+                    version_dir = part
+                    break
             extra_includes.append(
-                f"-I{this_dir}/csrc/arch35/flash_attn_npu_v3"
+                f"-I{this_dir}/csrc/arch35/{version_dir}"
             )
             extra_defines.append("-DCATLASS_ARCH=3510")
         else:
@@ -204,7 +223,7 @@ class BishengBuildExt(build_ext):
             "-D_FORTIFY_SOURCE=2",
             "-D_GNU_SOURCE",
             f"-I{aicpu_inc}",
-            f"-I{v3_dir}",  # tilingdata.h
+            f"-I{csrc_dir}",  # tilingdata.h
             f"--cce-aicpu-L{aicpu_lib}",
             "--cce-aicpu-laicpu_api",
             f"--cce-aicpu-toolkit-path={os.path.join(hcc, 'bin')}",
@@ -230,7 +249,7 @@ class BishengBuildExt(build_ext):
         return aicpu_obj
 
     def build_extensions(self):
-        toolchains = {ext.name: self._get_toolchain(ext.name) for ext in self.extensions}
+        toolchains = {ext.name: self._get_toolchain(ext) for ext in self.extensions}
 
         # Map every TU source -> (ext_name, obj_path). obj dir is per-extension so
         # v2/v3 .o files (same basenames, e.g. flash_api.o) never collide.
@@ -261,7 +280,8 @@ class BishengBuildExt(build_ext):
 
         # One shared pool across all extensions so the heaviest TUs compile
         # concurrently regardless of which extension owns them. TUs per extension
-        # once autogen dispatch TUs are added: arch22_v2=12, arch22_v3=9, arch35_v3=6.
+        # once autogen dispatch TUs are added: arch22_v2=12, arch22_v3=9,
+        # arch35_v3=6, arch22_v4=5, arch35_v4=6.
         max_workers = min(len(tasks), os.cpu_count() or 1)
         objs_by_ext = {ext.name: [] for ext in self.extensions}
         with ThreadPoolExecutor(max_workers=max_workers) as ex:
@@ -276,7 +296,7 @@ class BishengBuildExt(build_ext):
         for ext in self.extensions:
             if ext.name == "flash_attn_npu_arch22_v3":
                 ext_fullpath = self.get_ext_fullpath(ext.name)
-                aicpu_obj = self._build_aicpu_metadata(ext_fullpath)
+                aicpu_obj = self._build_aicpu_metadata(ext_fullpath, csrc_dir)
                 if aicpu_obj is not None:
                     objs_by_ext[ext.name].append(aicpu_obj)
 
@@ -342,6 +362,21 @@ src_arch35_v3 += glob.glob(os.path.join(this_dir, "csrc/arch35/flash_attn_npu_v3
 # instantiated only in the autogen TUs. head_dim is a runtime tiling axis, not a
 # generation axis, so it is not enumerated here.
 src_arch35_v3 += glob.glob(os.path.join(this_dir, "csrc/arch35/flash_attn_npu_v3", "autogen", "*.cpp"), recursive=True)
+src_arch22_v4 = glob.glob(os.path.join(this_dir, "csrc/arch22/flash_attn_npu_v4", "flash_api.cpp"), recursive=True)
+# arch22_v4's forward FAInfer dispatch is split into per-(dtype, layout)
+# translation units under autogen/, generated by autogen/generate_kernels.py.
+# flash_api.cpp keeps the fa_split host loop; the kernel templates are
+# instantiated only in the autogen TUs.
+src_arch22_v4 += glob.glob(os.path.join(this_dir, "csrc/arch22/flash_attn_npu_v4", "autogen", "*.cpp"), recursive=True)
+src_arch35_v4 = glob.glob(os.path.join(this_dir, "csrc/arch35/flash_attn_npu_v4", "flash_api.cpp"), recursive=True)
+src_arch35_v4 += glob.glob(os.path.join(this_dir, "csrc/arch35/flash_attn_npu_v4", "fai_host_api.cpp"), recursive=True)
+# arch35_v4's forward FAInfer dispatch is split into per-(dtype, layout) translation
+# units under autogen/, generated by autogen/generate_kernels.py, so the FAInfer /
+# FAInferDn kernel templates compile in parallel. fai_host_api.cpp stays a
+# lightweight router (BuildKernelKey + LaunchFAI); the kernel templates are
+# instantiated only in the autogen TUs. head_dim is a runtime tiling axis, not a
+# generation axis, so it is not enumerated here.
+src_arch35_v4 += glob.glob(os.path.join(this_dir, "csrc/arch35/flash_attn_npu_v4", "autogen", "*.cpp"), recursive=True)
 
 if not SKIP_NPU_BUILD:
     if BUILD_VERSION in ("v2", "all") and BUILD_NPU in ("910", "all"):
@@ -366,6 +401,28 @@ if not SKIP_NPU_BUILD:
         ext_modules.append(Extension(
             name="flash_attn_npu_arch35_v3",
             sources=src_arch35_v3,
+            language="c++",
+        ))
+
+    if BUILD_VERSION in ("v4", "all") and BUILD_NPU in ("910", "all"):
+        if not src_arch22_v4:
+            raise RuntimeError(
+                "FLASH_ATTN_BUILD_VERSION=v4 requires csrc/arch22/flash_attn_npu_v4/flash_api.cpp;"
+            )
+        ext_modules.append(Extension(
+            name="flash_attn_npu_arch22_v4",
+            sources=src_arch22_v4,
+            language="c++",
+        ))
+
+    if BUILD_VERSION in ("v4", "all") and BUILD_NPU in ("950", "all"):
+        if not src_arch35_v4:
+            raise RuntimeError(
+                "FLASH_ATTN_BUILD_NPU=950 or FLASH_ATTN_BUILD_VERSION=v4 requires csrc/arch35/flash_attn_npu_v4/flash_api.cpp;"
+            )
+        ext_modules.append(Extension(
+            name="flash_attn_npu_arch35_v4",
+            sources=src_arch35_v4,
             language="c++",
         ))
 
