@@ -187,11 +187,8 @@ public:
 
 #ifdef __DAV_VEC__
         coreIdx = AscendC::GetBlockIdx() / AscendC::GetSubBlockNum();
-        // FA4 rescale-skip (ported from csrc/flash_attn_npu_v3 commit e4bf01f):
-        // 4.0f arms the online-softmax baseline freeze; `true` arms the matching O-rescale
-        // compute-skip. Set the threshold to 0.0f (and the flag to false) to fully disable.
-        EpilogueOnlineSoftmax epilogueOnlineSoftmax(resource, scaleValue_, 4.0f);
-        EpilogueRescaleO epilogueRescaleO(resource, /*enableRescaleSkip=*/true);
+        EpilogueOnlineSoftmax epilogueOnlineSoftmax(resource, scaleValue_);
+        EpilogueRescaleO epilogueRescaleO(resource);
 #endif
 
         int64_t strideQ = 0;

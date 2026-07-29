@@ -223,7 +223,7 @@ class BishengBuildExt(build_ext):
             "-D_FORTIFY_SOURCE=2",
             "-D_GNU_SOURCE",
             f"-I{aicpu_inc}",
-            f"-I{csrc_dir}",  # tilingdata.h
+            f"-I{v3_dir}",  # tilingdata.h
             f"--cce-aicpu-L{aicpu_lib}",
             "--cce-aicpu-laicpu_api",
             f"--cce-aicpu-toolkit-path={os.path.join(hcc, 'bin')}",
@@ -296,7 +296,7 @@ class BishengBuildExt(build_ext):
         for ext in self.extensions:
             if ext.name == "flash_attn_npu_arch22_v3":
                 ext_fullpath = self.get_ext_fullpath(ext.name)
-                aicpu_obj = self._build_aicpu_metadata(ext_fullpath, csrc_dir)
+                aicpu_obj = self._build_aicpu_metadata(ext_fullpath)
                 if aicpu_obj is not None:
                     objs_by_ext[ext.name].append(aicpu_obj)
 
