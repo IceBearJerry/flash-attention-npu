@@ -52,6 +52,9 @@ FLASH_ATTN_BUILD_VERSION=v2 python setup.py install
 
 # 仅编译 v3
 FLASH_ATTN_BUILD_VERSION=v3 python setup.py install
+
+# 仅编译 v4
+FLASH_ATTN_BUILD_VERSION=v4 python setup.py install
 ```
 
 ## 测试
@@ -64,6 +67,9 @@ pytest -q -s tests/test_flash_attn_npu.py
 
 # 测试 FlashAttention v3
 pytest -q -s tests/test_flash_attn_npu_v3.py
+
+# 测试 FlashAttention v4
+pytest -q -s tests/test_flash_attn_npu_v4.py
 ```
 
 ## 使用方法
@@ -525,6 +531,87 @@ def flash_attn_varlen_func(
     """
 ```
 
+### FlashAttention v4
+
+#### flash_attn_varlen_func
+```python
+def flash_attn_varlen_func(
+    q,
+    k,
+    v,
+    qv=None,
+    cu_seqlens_q: Optional[torch.Tensor] = None,
+    cu_seqlens_k: Optional[torch.Tensor] = None,
+    max_seqlen_q: Optional[int] = None,
+    max_seqlen_k: Optional[int] = None,
+    min_seqlen_k: Optional[int] = None,
+    seqused_q=None,
+    seqused_k=None,
+    gather_kv_indices: Optional[torch.Tensor] = None,
+    page_table: Optional[torch.Tensor] = None,
+    softmax_scale=None,
+    causal:bool = False,
+    window_size=(-1, -1),  # -1 means infinite context window
+    learnable_sink: Optional[torch.Tensor] = None,
+    softcap=0.0, # 0.0 means deactivated
+    num_splits=0,    # Can be tuned for speed
+    pack_gqa=None,   # Can be tuned for speed
+    deterministic:bool = False, 
+    score_mod=None,
+    score_mod_bwd=None,
+    mask_mod=None,
+    block_sparse_tensors=None,
+    aux_tensors: Optional[list] = None,
+    aux_scalars: Optional[tuple] = None,
+    return_lse:bool = False,
+):
+    """
+    v4 版本的变长序列注意力接口。
+
+    支持变长序列：Q、K、V 按 token 拼接存储，通过 cu_seqlens 索引各序列边界。
+    支持多查询注意力和分组查询注意力（MQA/GQA）。
+
+    如果 causal=True，因果掩码对齐到注意力矩阵的右下角。
+
+    如果 window_size != (-1, -1)，实现滑动窗口局部注意力。
+
+    支持可选分页 KV Cache：
+    通过 page_table 指定 KV cache 页表，k/v 可采用分页格式存储。
+
+    参数：
+        q: (total_q, nheads, headdim)，total_q 为批次中 query token 总数。当不使用变长模式时，为 (batch_size, seqlen, nheads, headdim)。
+        k: (total_k, nheads_k, headdim)，total_k 为批次中 key token 总数。当使用 paged KV cache 时，为 (num_pages, page_size, nheads_k, headdim)。
+        v: (total_k, nheads_k, headdim_v)，total_k 为批次中 value token 总数。当使用 paged KV cache 时，为 (num_pages, page_size, nheads_k, headdim_v)。
+        cu_seqlens_q: (batch_size + 1,)，dtype 为 torch.int32。用于索引 q 的累积序列长度。
+        cu_seqlens_k: (batch_size + 1,)，dtype 为 torch.int32。用于索引 k、v 的累积序列长度。
+        max_seqlen_q: int。批次中最大 query 序列长度。
+        max_seqlen_k: int。批次中最大 key 序列长度。
+        min_seqlen_k [可选]:key 的最小序列长度。
+        seqused_q [可选]:(batch_size,)，dtype 为 torch.int32。每个 batch 实际使用的 query 序列长度。
+        seqused_k [可选]:(batch_size,)，dtype 为 torch.int32。每个 batch 实际使用的 key 序列长度。
+        gather_kv_indices [可选]:KV 索引。
+        page_table [可选]:(batch_size, max_num_pages_per_seq)，dtype 为 torch.int32。分页 KV Cache 的页表。
+        softmax_scale:float。softmax 前对 QK^T 的缩放因子。默认为 1 / sqrt(headdim + (headdim_v if qv is not None else 0))。
+        causal:bool。是否应用因果注意力掩码。
+        qv [可选]:(batch_size, seqlen, nheads, headdim_v)。用于 cross-attention。
+        window_size:(left, right)。如果 != (-1, -1)，实现滑动窗口局部注意力。
+        softcap:float。大于 0 时激活 softcapping 注意力。
+        num_splits:int。key/value 序列维度分割块数。如果为 0，则根据启发式方法自动确定分割数量。
+        pack_gqa:bool。是否打包 GQA 以提高性能。
+        deterministic:bool。是否使用反向传播的确定性实现。
+        score_mod [可选]:自定义 score 修改函数。
+        score_mod_bwd [可选]:反向传播阶段的自定义 score 修改函数。
+        mask_mod [可选]:自定义 attention mask。
+        block_sparse_tensors [可选]:block sparse tensor。
+        aux_tensors [可选]:用于 score_mod 的辅助 tensor。
+        aux_scalars [可选]:用于 score_mod/mask_mod 的辅助标量。
+        return_lse:bool。是否返回 attention scores 的 logsumexp。
+    返回：
+        out:(total_q, nheads, headdim_v)。
+        softmax_lse [可选，return_lse=True 时]:(nheads, total_q)。QK^T * scaling 每行的 logsumexp。
+    """
+```
+
 ## 特性
 
 #### flash_attn_with_kvcache
@@ -557,20 +644,20 @@ def flash_attn_varlen_func(
 | Dropout | - | - |
 
 #### flash_attn_varlen_func
-| 特性 | v2 | v3 |
-|------|----|----|
-| FP16 (float16) | ✅ | ✅ |
-| BF16 (bfloat16) | ✅ | ✅ |
-| 因果注意力 (Causal) | ✅ | ✅ |
-| 滑动窗口注意力 | ✅ | ✅ |
-| MQA/GQA | ✅ | ✅ |
-| 反向传播 | ✅ | ✅ |
-| 变长序列 | ✅ | ✅ |
-| 分页 KV 缓存 | - | - |
-| ALiBi | - | - |
-| Softcapping | - | - |
-| FP8 量化 | - | - |
-| Dropout | - | - |
+| 特性 | v2 | v3 | v4 |
+|------|----|----|----|
+| FP16 (float16) | ✅ | ✅ | ✅ |
+| BF16 (bfloat16) | ✅ | ✅ | ✅ |
+| 因果注意力 (Causal) | ✅ | ✅ | ✅ |
+| 滑动窗口注意力 | ✅ | ✅ | ✅ |
+| MQA/GQA | ✅ | ✅ | ✅ |
+| 反向传播 | ✅ | ✅ | - |
+| 变长序列 | ✅ | ✅ | ✅ |
+| 分页 KV 缓存 | - | - | ✅ |
+| ALiBi | - | - | - |
+| Softcapping | - | - | - |
+| FP8 量化 | - | - | - |
+| Dropout | - | - | - |
 
 
 

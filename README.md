@@ -539,6 +539,121 @@ def flash_attn_varlen_func(
     """
 ```
 
+### FlashAttention v4
+
+#### flash_attn_varlen_func
+```python
+def flash_attn_varlen_func(
+    q,
+    k,
+    v,
+    qv=None,
+    cu_seqlens_q: Optional[torch.Tensor] = None,
+    cu_seqlens_k: Optional[torch.Tensor] = None,
+    max_seqlen_q: Optional[int] = None,
+    max_seqlen_k: Optional[int] = None,
+    min_seqlen_k: Optional[int] = None,
+    seqused_q=None,
+    seqused_k=None,
+    gather_kv_indices: Optional[torch.Tensor] = None,
+    page_table: Optional[torch.Tensor] = None,
+    softmax_scale=None,
+    causal:bool = False,
+    window_size=(-1, -1),  # -1 means infinite context window
+    learnable_sink: Optional[torch.Tensor] = None,
+    softcap=0.0, # 0.0 means deactivated
+    num_splits=0,    # Can be tuned for speed
+    pack_gqa=None,   # Can be tuned for speed
+    deterministic:bool = False, 
+    score_mod=None,
+    score_mod_bwd=None,
+    mask_mod=None,
+    block_sparse_tensors=None,
+    aux_tensors: Optional[list] = None,
+    aux_scalars: Optional[tuple] = None,
+    return_lse:bool = False,
+):
+    """
+    FlashAttention for variable-length sequences with optional paged KV cache.
+
+    If cu_seqlens_q is provided, the input is treated as varlen (packed) format,
+    where all sequences are concatenated along the sequence dimension. Otherwise,
+    q, k, v are treated as dense tensors of shape (batch_size, seqlen, nheads, headdim).
+
+    For paged KV cache, pass page_table and shape k/v as
+    (num_pages, page_size, nheads_k, headdim).
+
+    Supports multi-query and grouped-query attention (MQA/GQA) by passing in KV with fewer heads
+    than Q. The number of heads in Q must be divisible by the number of heads in KV.
+
+    If causal=True, the causal mask is aligned to the bottom right corner of the attention matrix.
+    For example, if seqlen_q = 2 and seqlen_k = 5, the causal mask (1 = keep, 0 = masked out) is:
+        1 1 1 1 0
+        1 1 1 1 1
+    If seqlen_q = 5 and seqlen_k = 2, the causal mask is:
+        0 0
+        0 0
+        0 0
+        1 0
+        1 1
+    If the row of the mask is all zero, the output will be zero.
+
+    If window_size != (-1, -1), implements sliding window local attention. Query at position i
+    will only attend to keys between
+    [i + seqlen_k - seqlen_q - window_size[0], i + seqlen_k - seqlen_q + window_size[1]] inclusive.
+
+    Note: Does not support backward pass.
+
+    Arguments:
+        q: (batch_size, seqlen, nheads, headdim) or (total_q, nheads, headdim) if cu_seqlens_q
+            is provided.
+        k: (batch_size, seqlen, nheads_k, headdim) or (total_k, nheads_k, headdim) if cu_seqlens_k
+            is provided, or (num_pages, page_size, nheads_k, headdim) if page_table is provided.
+        v: (batch_size, seqlen, nheads_k, headdim_v) or (total_k, nheads_k, headdim_v) if
+            cu_seqlens_k is provided, or (num_pages, page_size, nheads_k, headdim_v) if page_table
+            is provided.
+        qv [optional]: (batch_size, seqlen, nheads, headdim_v). Used for cross-attention.
+        cu_seqlens_q [optional]: (batch_size + 1,), dtype torch.int32. Cumulative sequence lengths
+            of q.
+        cu_seqlens_k [optional]: (batch_size + 1,), dtype torch.int32. Cumulative sequence lengths
+            of k.
+        max_seqlen_q [optional]: Maximum sequence length of q.
+        max_seqlen_k [optional]: Maximum sequence length of k.
+        min_seqlen_k [optional]: Minimum sequence length of k. (Not supported on NPU)
+        seqused_q [optional]: (batch_size,), dtype torch.int32. If given, only this many elements
+            of each batch element's queries are used.
+        seqused_k [optional]: (batch_size,), dtype torch.int32. If given, only this many elements
+            of each batch element's keys are used. Equivalent to cache_seqlens in KV cache scenarios.
+        gather_kv_indices [optional]: (Not supported on NPU)
+        page_table [optional]: (batch_size, max_num_pages_per_seq), dtype torch.int32. Page table
+            for paged KV cache.
+        softmax_scale: float. The scaling of QK^T before applying softmax.
+            Default to 1 / sqrt(headdim + (headdim_v if qv is not None else 0)).
+        causal: bool. Whether to apply causal attention mask (e.g., for auto-regressive modeling).
+        window_size: (left, right). If not (-1, -1), implements sliding window local attention.
+        learnable_sink [optional]: (num_heads,), dtype bfloat16. Learnable sink token.
+            (Not supported on NPU)
+        softcap: float. Anything > 0 activates softcapping attention.
+        num_splits: int. If > 1, split the key/value into this many chunks along the sequence.
+            If num_splits == 0, use a heuristic to automatically determine the number of splits.
+        pack_gqa: bool. If True, pack GQA for better performance. (Not supported on NPU)
+        deterministic: bool. Whether to use deterministic backward pass. (Not supported on NPU)
+        score_mod: Optional callable. Custom score modification. (Not supported on NPU)
+        score_mod_bwd: Optional callable. Custom score modification for backward. (Not supported on NPU)
+        mask_mod: Optional callable. Custom attention mask. (Not supported on NPU)
+        block_sparse_tensors: Optional block sparse tensors. (Not supported on NPU)
+        aux_tensors: Optional list of tensors. Auxiliary tensors for score_mod. (Not supported on NPU)
+        aux_scalars: Optional tuple. Auxiliary scalars for score_mod/mask_mod. (Not supported on NPU)
+        return_lse: bool. Whether to return the logsumexp of the attention scores.
+
+    Return:
+        out: (batch_size, seqlen, nheads, headdim_v) or (total_q, nheads, headdim_v) if varlen.
+        softmax_lse [optional, if return_lse=True]: (batch_size, nheads, seqlen). The
+            logsumexp of each row of the matrix QK^T * scaling (e.g., log of the softmax
+            normalization factor).
+    """
+```
+
 ## Features
 
 #### flash_attn_with_kvcache
@@ -571,21 +686,20 @@ def flash_attn_varlen_func(
 | Dropout | - | - |
 
 #### flash_attn_varlen_func
-| Feature | v2 | v3 |
-|---------|----|----|
-| FP16 (float16) | ✅ | ✅ |
-| BF16 (bfloat16) | ✅ | ✅ |
-| Causal Attention | ✅ | ✅ |
-| Sliding Window Attention | ✅ | ✅ |
-| MQA/GQA | ✅ | ✅ |
-| Backward Pass | ✅ | ✅ |
-| Variable-length Sequences | ✅ | ✅ |
-| Paged KV Cache | - | - |
-| ALiBi | - | - |
-| Softcapping | - | - |
-| FP8 Quantization | - | - |
-| Dropout | - | - |
-
+| Feature | v2 | v3 | v4 |
+|---------|----|----|----|
+| FP16 (float16) | ✅ | ✅ | ✅ |
+| BF16 (bfloat16) | ✅ | ✅ | ✅ |
+| Causal Attention | ✅ | ✅ | ✅ |
+| Sliding Window Attention | ✅ | ✅ | ✅ |
+| MQA/GQA | ✅ | ✅ | ✅ |
+| Backward Pass | ✅ | ✅ | - |
+| Variable-length Sequences | ✅ | ✅ | ✅ |
+| Paged KV Cache | - | - | ✅ |
+| ALiBi | - | - | - |
+| Softcapping | - | - | - |
+| FP8 Quantization | - | - | - |
+| Dropout | - | - | - |
 
 
 ## License
