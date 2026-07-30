@@ -271,6 +271,9 @@ test_cases = [
     (torch.bfloat16, 4, 32, 32, 32, 2048, 128, 128, False, "TND", False, -1, -1, 30.0),
     (torch.bfloat16, 4, 32, 32, 48, 2048, 128, 128, False, "TND", False, -1, -1, 50.0),
     (torch.bfloat16, 4, 64, 64, 64, 2048, 128, 128, False, "TND", False, -1, -1, 50.0),
+    (torch.bfloat16, 1, 3, 1, 128, 2048, 1, 128, False, "BSND", False, -1, -1, 0.0),
+    (torch.bfloat16, 1, 3, 1, 128, 2048, 1, 128, False, "TND", False, -1, -1, 0.0),
+    (torch.bfloat16, 8, 1024, 16, 8, 640, 1, 128, False, "BSND", False, -1, -1, 0.0),
 ]
 
 @pytest.mark.parametrize("num_splits", [0, 2])
@@ -282,8 +285,8 @@ def test_fa_custom_ops(data_type, batch_size, num_heads, kv_heads, q_seqlen, kv_
         pytest.skip("num_splits>1 requires paged KV cache and TND (varlen-q) layout")
     if "Ascend950" in name and num_splits > 1:
         pytest.skip("Ascend950 does not support num_splits>1")
-    if "Ascend950" in name and head_size > 128:
-        pytest.skip("Ascend950 does not support head_size>128")
+    if "Ascend950" in name and (head_size not in [64, 128]):
+        pytest.skip("Ascend950 support head_size in 64,128")
     if is_varied and layout != "TND":
         pytest.skip("is_varied requires TND (varlen-q) layout")
     q_min_range = -5.0
