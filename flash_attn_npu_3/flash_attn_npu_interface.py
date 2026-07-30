@@ -8,7 +8,7 @@ import torch.nn as nn
 
 # isort: off
 # We need to import the kernels after importing torch
-import flash_attn_npu_3  # Registers operators with PyTorch
+from . import flash_attn_npu_3  # Registers operators with PyTorch
 
 # isort: on
 
