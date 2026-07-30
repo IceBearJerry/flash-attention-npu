@@ -40,25 +40,25 @@ BASE_WHEEL_URL = (
 FORCE_BUILD = os.getenv("FLASH_ATTENTION_FORCE_BUILD", "FALSE") == "TRUE"
 SKIP_NPU_BUILD = os.getenv("FLASH_ATTENTION_SKIP_NPU_BUILD", "FALSE") == "TRUE"
 # FLASH_ATTN_BUILD_VERSION selects which API generations to build:
-#   "v2"   build flash_attn_npu_arch22_v2     (910B/C only)
+#   "v2"   build flash_attn_npu.flash_attn_npu     (910B/C only)
 #   "v3"   build the v3 backends selected by FLASH_ATTN_BUILD_NPU:
-#            flash_attn_npu_arch22_v3    (Ascend 910B/C, csrc/arch22)
-#            flash_attn_npu_arch35_v3    (Ascend 950,    csrc/arch35)
+#            flash_attn_npu_3.flash_attn_npu_3    (Ascend 910B/C, csrc/ascend910)
+#            flash_attn_npu_3_950                 (Ascend 950,    csrc/ascend950)
 #   "v4"   build the v4 backends selected by FLASH_ATTN_BUILD_NPU:
-#            flash_attn_npu_arch22_v4      (Ascend 910B/C, csrc/arch22)
-#            flash_attn_npu_arch35_v4      (Ascend 950,    csrc/arch35)
-#          Runtime dispatch in flash_attn_npu_v4/__init__.py picks the
+#            flash_attn_npu_4.flash_attn_npu_4      (Ascend 910B/C, csrc/ascend910)
+#            flash_attn_npu_4_950                   (Ascend 950,    csrc/ascend950)
+#          Runtime dispatch in flash_attn_npu_4/__init__.py picks the
 #          matching backend per host via torch_npu.npu.get_device_name(),
 #          so a single wheel runs on both 910 and 950.
 #   "all"  build v2 + v3 + the v4 backends selected by FLASH_ATTN_BUILD_NPU.
 # FLASH_ATTN_BUILD_NPU selects which NPU hardware backends to build:
-#   "910"  only Ascend 910B/C backends (flash_attn_npu_arch22_v2,
-#          flash_attn_npu_arch22_v3, flash_attn_npu_arch22_v4)
-#   "950"  only the Ascend 950 backends (flash_attn_npu_arch35_v3,
-#          flash_attn_npu_arch35_v4)
+#   "910"  only Ascend 910B/C backends (flash_attn_npu.flash_attn_npu,
+#          flash_attn_npu_3.flash_attn_npu_3, flash_attn_npu_4.flash_attn_npu_4)
+#   "950"  only the Ascend 950 backends (flash_attn_npu_3_950,
+#          flash_attn_npu_4_950)
 #   "all"  build every backend whose API generation is selected above
-#          (default). Runtime dispatch in flash_attn_npu_v3/__init__.py and
-#          flash_attn_npu_v4/__init__.py picks the matching backend per host
+#          (default). Runtime dispatch in flash_attn_npu_3/__init__.py and
+#          flash_attn_npu_4/__init__.py picks the matching backend per host
 #          via torch_npu.npu.get_device_name(), so an "all" wheel runs on
 #          both 910 and 950.
 BUILD_VERSION = os.getenv("FLASH_ATTN_BUILD_VERSION", "all").lower()
@@ -90,27 +90,27 @@ class BishengBuildExt(build_ext):
         if not os.path.exists(ascend_home):
             raise RuntimeError(f"ASCEND_TOOLKIT_HOME={ascend_home}")
 
-        # Determine the target arch (3510 vs 2201) and the versioned arch35
+        # Determine the target arch (3510 vs 2201) and the versioned ascend950
         # include dir from the extension's first source path. v3 modules are
-        # named flash_attn_npu_arch35_v3 (sources under csrc/arch35/flash_attn_npu_v3),
-        # v4 modules are named flash_attn_npu_arch35_v4 (sources under
-        # csrc/arch35/flash_attn_npu_v4); deriving both pieces from the source
+        # named flash_attn_npu_3_950 (sources under csrc/ascend950/flash_attn_npu_3),
+        # v4 modules are named flash_attn_npu_4_950 (sources under
+        # csrc/ascend950/flash_attn_npu_4); deriving both pieces from the source
         # path keeps the v3/v4 divergence working without hardcoding.
         first_src = ext.sources[0] if ext.sources else ""
         src_norm = first_src.replace("\\", "/")
-        is_arch35 = "arch35" in src_norm
-        npu_arch = "dav-3510" if is_arch35 else "dav-2201"
+        is_ascend950 = "ascend950" in src_norm
+        npu_arch = "dav-3510" if is_ascend950 else "dav-2201"
 
         extra_includes = []
         extra_defines = []
-        if is_arch35:
-            version_dir = "flash_attn_npu_v3"  # fallback
+        if is_ascend950:
+            version_dir = "flash_attn_npu_3"  # fallback
             for part in src_norm.split("/"):
-                if part.startswith("flash_attn_npu_v"):
+                if part in ("flash_attn_npu", "flash_attn_npu_3", "flash_attn_npu_4"):
                     version_dir = part
                     break
             extra_includes.append(
-                f"-I{this_dir}/csrc/arch35/{version_dir}"
+                f"-I{this_dir}/csrc/ascend950/{version_dir}"
             )
             extra_defines.append("-DCATLASS_ARCH=3510")
         else:
@@ -194,15 +194,15 @@ class BishengBuildExt(build_ext):
         return self._toolchains[ext_name]
 
     def _build_aicpu_metadata(self, ext_fullpath):
-        """Compile fa_metadata.aicpu (host AICPU object) for the arch22_v3 extension
-        (flash_attn_npu_arch22_v3). This is a separate `bisheng -x aicpu` invocation
+        """Compile fa_metadata.aicpu (host AICPU object) for the ascend910 v3 extension
+        (flash_attn_npu_3). This is a separate `bisheng -x aicpu` invocation
         (host CPU code cross-compiled with hcc, not ASC device code); the
-        resulting object is linked into flash_attn_npu_arch22_v3 alongside the ASC device
+        resulting object is linked into flash_attn_npu_3 alongside the ASC device
         objects. Returns the .o path, or None if there is no aicpu source.
         Preserved from main's metadata feature through the parallel-pipeline
         refactor."""
         ascend_home = os.getenv("ASCEND_TOOLKIT_HOME", os.getenv("ASCEND_HOME_PATH", "/usr/local/Ascend"))
-        v3_dir = os.path.join(this_dir, "csrc/arch22", "flash_attn_npu_v3")
+        v3_dir = os.path.join(this_dir, "csrc/ascend910", "flash_attn_npu_3")
         aicpu_src = os.path.join(v3_dir, "fa_metadata.aicpu")
         if not os.path.exists(aicpu_src):
             return None
@@ -280,8 +280,8 @@ class BishengBuildExt(build_ext):
 
         # One shared pool across all extensions so the heaviest TUs compile
         # concurrently regardless of which extension owns them. TUs per extension
-        # once autogen dispatch TUs are added: arch22_v2=12, arch22_v3=9,
-        # arch35_v3=6, arch22_v4=5, arch35_v4=6.
+        # once autogen dispatch TUs are added: ascend910_v2=12, ascend910_v3=9,
+        # ascend950_v3=6, ascend910_v4=5, ascend950_v4=6.
         max_workers = min(len(tasks), os.cpu_count() or 1)
         objs_by_ext = {ext.name: [] for ext in self.extensions}
         with ThreadPoolExecutor(max_workers=max_workers) as ex:
@@ -290,11 +290,11 @@ class BishengBuildExt(build_ext):
                 ext_name, obj = fut.result()
                 objs_by_ext[ext_name].append(obj)
 
-        # AICPU metadata object for the arch22_v3 extension: compiled separately
+        # AICPU metadata object for the ascend910 v3 extension: compiled separately
         # (host code, `bisheng -x aicpu`) and appended to that extension's link
         # set. Built after the parallel ASC compiles, before linking.
         for ext in self.extensions:
-            if ext.name == "flash_attn_npu_arch22_v3":
+            if ext.name == "flash_attn_npu_3.flash_attn_npu_3":
                 ext_fullpath = self.get_ext_fullpath(ext.name)
                 aicpu_obj = self._build_aicpu_metadata(ext_fullpath)
                 if aicpu_obj is not None:
@@ -341,88 +341,90 @@ if not os.path.exists(os.path.join(this_dir, "csrc/catlass", "include/catlass/ca
         f"and retry."
     )
 
-src_arch22_v2 = glob.glob(os.path.join(this_dir, "csrc/arch22/flash_attn_npu_v2", "flash_api.cpp"), recursive=True)
-src_arch22_v2 += glob.glob(os.path.join(this_dir, "csrc/arch22/flash_attn_npu_v2", "fag_general_host.cpp"), recursive=True)
-# arch22_v2's forward FAInfer / FAGGeneral backward / varlen-backward dispatch is split
+src_ascend910_v2 = glob.glob(os.path.join(this_dir, "csrc/ascend910/flash_attn_npu", "flash_api.cpp"), recursive=True)
+src_ascend910_v2 += glob.glob(os.path.join(this_dir, "csrc/ascend910/flash_attn_npu", "fag_general_host.cpp"), recursive=True)
+# ascend910 v2's forward FAInfer / FAGGeneral backward / varlen-backward dispatch is split
 # into per-(dtype, layout) translation units under autogen/, generated by
 # autogen/generate_kernels.py, so the heavy kernel templates compile in parallel.
-src_arch22_v2 += glob.glob(os.path.join(this_dir, "csrc/arch22/flash_attn_npu_v2", "autogen", "*.cpp"), recursive=True)
-src_arch22_v3 = glob.glob(os.path.join(this_dir, "csrc/arch22/flash_attn_npu_v3", "flash_api.cpp"), recursive=True)
-# arch22_v3's forward FAInfer / backward FAGGeneral dispatch is split into per-
+src_ascend910_v2 += glob.glob(os.path.join(this_dir, "csrc/ascend910/flash_attn_npu", "autogen", "*.cpp"), recursive=True)
+src_ascend910_v3 = glob.glob(os.path.join(this_dir, "csrc/ascend910/flash_attn_npu_3", "flash_api.cpp"), recursive=True)
+# ascend910 v3's forward FAInfer / backward FAGGeneral dispatch is split into per-
 # (dtype, layout) translation units under autogen/, generated by
 # autogen/generate_kernels.py. flash_api.cpp keeps the fa_split host loop +
 # metadata logic; the kernel templates are instantiated only in the autogen TUs.
-src_arch22_v3 += glob.glob(os.path.join(this_dir, "csrc/arch22/flash_attn_npu_v3", "autogen", "*.cpp"), recursive=True)
-src_arch35_v3 = glob.glob(os.path.join(this_dir, "csrc/arch35/flash_attn_npu_v3", "flash_api.cpp"), recursive=True)
-src_arch35_v3 += glob.glob(os.path.join(this_dir, "csrc/arch35/flash_attn_npu_v3", "fai_host_api.cpp"), recursive=True)
-# arch35_v3's forward FAInfer dispatch is split into per-(dtype, layout) translation
+src_ascend910_v3 += glob.glob(os.path.join(this_dir, "csrc/ascend910/flash_attn_npu_3", "autogen", "*.cpp"), recursive=True)
+src_ascend950_v3 = glob.glob(os.path.join(this_dir, "csrc/ascend950/flash_attn_npu_3", "flash_api.cpp"), recursive=True)
+src_ascend950_v3 += glob.glob(os.path.join(this_dir, "csrc/ascend950/flash_attn_npu_3", "fai_host_api.cpp"), recursive=True)
+# ascend950 v3's forward FAInfer dispatch is split into per-(dtype, layout) translation
 # units under autogen/, generated by autogen/generate_kernels.py, so the FAInfer /
 # FAInferDn kernel templates compile in parallel. fai_host_api.cpp stays a
 # lightweight router (BuildKernelKey + LaunchFAI); the kernel templates are
 # instantiated only in the autogen TUs. head_dim is a runtime tiling axis, not a
 # generation axis, so it is not enumerated here.
-src_arch35_v3 += glob.glob(os.path.join(this_dir, "csrc/arch35/flash_attn_npu_v3", "autogen", "*.cpp"), recursive=True)
-src_arch22_v4 = glob.glob(os.path.join(this_dir, "csrc/arch22/flash_attn_npu_v4", "flash_api.cpp"), recursive=True)
-# arch22_v4's forward FAInfer dispatch is split into per-(dtype, layout)
+src_ascend950_v3 += glob.glob(os.path.join(this_dir, "csrc/ascend950/flash_attn_npu_3", "autogen", "*.cpp"), recursive=True)
+src_ascend910_v4 = glob.glob(os.path.join(this_dir, "csrc/ascend910/flash_attn_npu_4", "flash_api.cpp"), recursive=True)
+# ascend910 v4's forward FAInfer dispatch is split into per-(dtype, layout)
 # translation units under autogen/, generated by autogen/generate_kernels.py.
 # flash_api.cpp keeps the fa_split host loop; the kernel templates are
 # instantiated only in the autogen TUs.
-src_arch22_v4 += glob.glob(os.path.join(this_dir, "csrc/arch22/flash_attn_npu_v4", "autogen", "*.cpp"), recursive=True)
-src_arch35_v4 = glob.glob(os.path.join(this_dir, "csrc/arch35/flash_attn_npu_v4", "flash_api.cpp"), recursive=True)
-src_arch35_v4 += glob.glob(os.path.join(this_dir, "csrc/arch35/flash_attn_npu_v4", "fai_host_api.cpp"), recursive=True)
-# arch35_v4's forward FAInfer dispatch is split into per-(dtype, layout) translation
+src_ascend910_v4 += glob.glob(os.path.join(this_dir, "csrc/ascend910/flash_attn_npu_4", "autogen", "*.cpp"), recursive=True)
+src_ascend950_v4 = glob.glob(os.path.join(this_dir, "csrc/ascend950/flash_attn_npu_4", "flash_api.cpp"), recursive=True)
+src_ascend950_v4 += glob.glob(os.path.join(this_dir, "csrc/ascend950/flash_attn_npu_4", "fai_host_api.cpp"), recursive=True)
+# ascend950 v4's forward FAInfer dispatch is split into per-(dtype, layout) translation
 # units under autogen/, generated by autogen/generate_kernels.py, so the FAInfer /
 # FAInferDn kernel templates compile in parallel. fai_host_api.cpp stays a
 # lightweight router (BuildKernelKey + LaunchFAI); the kernel templates are
 # instantiated only in the autogen TUs. head_dim is a runtime tiling axis, not a
 # generation axis, so it is not enumerated here.
-src_arch35_v4 += glob.glob(os.path.join(this_dir, "csrc/arch35/flash_attn_npu_v4", "autogen", "*.cpp"), recursive=True)
+src_ascend950_v4 += glob.glob(os.path.join(this_dir, "csrc/ascend950/flash_attn_npu_4", "autogen", "*.cpp"), recursive=True)
 
 if not SKIP_NPU_BUILD:
     if BUILD_VERSION in ("v2", "all") and BUILD_NPU in ("910", "all"):
+        # Nested under the Python package so the extension name does not collide
+        # with the flash_attn_npu package itself.
         ext_modules.append(Extension(
-            name="flash_attn_npu_arch22_v2",
-            sources=src_arch22_v2,
+            name="flash_attn_npu.flash_attn_npu",
+            sources=src_ascend910_v2,
             language="c++",
         ))
 
     if BUILD_VERSION in ("v3", "all") and BUILD_NPU in ("910", "all"):
         ext_modules.append(Extension(
-            name="flash_attn_npu_arch22_v3",
-            sources=src_arch22_v3,
+            name="flash_attn_npu_3.flash_attn_npu_3",
+            sources=src_ascend910_v3,
             language="c++",
         ))
 
     if BUILD_VERSION in ("v3", "all") and BUILD_NPU in ("950", "all"):
-        if not src_arch35_v3:
+        if not src_ascend950_v3:
             raise RuntimeError(
-                "FLASH_ATTN_BUILD_NPU=950 or FLASH_ATTN_BUILD_VERSION=v3 requires csrc/arch35/flash_attn_npu_v3/flash_api.cpp;"
+                "FLASH_ATTN_BUILD_NPU=950 or FLASH_ATTN_BUILD_VERSION=v3 requires csrc/ascend950/flash_attn_npu_3/flash_api.cpp;"
             )
         ext_modules.append(Extension(
-            name="flash_attn_npu_arch35_v3",
-            sources=src_arch35_v3,
+            name="flash_attn_npu_3_950",
+            sources=src_ascend950_v3,
             language="c++",
         ))
 
     if BUILD_VERSION in ("v4", "all") and BUILD_NPU in ("910", "all"):
-        if not src_arch22_v4:
+        if not src_ascend910_v4:
             raise RuntimeError(
-                "FLASH_ATTN_BUILD_VERSION=v4 requires csrc/arch22/flash_attn_npu_v4/flash_api.cpp;"
+                "FLASH_ATTN_BUILD_VERSION=v4 requires csrc/ascend910/flash_attn_npu_4/flash_api.cpp;"
             )
         ext_modules.append(Extension(
-            name="flash_attn_npu_arch22_v4",
-            sources=src_arch22_v4,
+            name="flash_attn_npu_4.flash_attn_npu_4",
+            sources=src_ascend910_v4,
             language="c++",
         ))
 
     if BUILD_VERSION in ("v4", "all") and BUILD_NPU in ("950", "all"):
-        if not src_arch35_v4:
+        if not src_ascend950_v4:
             raise RuntimeError(
-                "FLASH_ATTN_BUILD_NPU=950 or FLASH_ATTN_BUILD_VERSION=v4 requires csrc/arch35/flash_attn_npu_v4/flash_api.cpp;"
+                "FLASH_ATTN_BUILD_NPU=950 or FLASH_ATTN_BUILD_VERSION=v4 requires csrc/ascend950/flash_attn_npu_4/flash_api.cpp;"
             )
         ext_modules.append(Extension(
-            name="flash_attn_npu_arch35_v4",
-            sources=src_arch35_v4,
+            name="flash_attn_npu_4_950",
+            sources=src_ascend950_v4,
             language="c++",
         ))
 
@@ -437,7 +439,7 @@ if not SKIP_NPU_BUILD:
 
 
 def get_package_version():
-    with open(Path(this_dir) / "flash_attn_npu_v2" / "__init__.py", "r") as f:
+    with open(Path(this_dir) / "flash_attn_npu" / "__init__.py", "r") as f:
         version_match = re.search(r"^__version__\s*=\s*(.*)$", f.read(), re.MULTILINE)
     public_version = ast.literal_eval(version_match.group(1))
     local_version = os.environ.get("FLASH_ATTN_LOCAL_VERSION")
@@ -501,8 +503,8 @@ setup(
     packages=find_packages(
         exclude=(
             "build",
-            "csrc/arch22",
-            "csrc/arch35",
+            "csrc/ascend910",
+            "csrc/ascend950",
             "include",
             "tests",
             "dist",

@@ -8,9 +8,9 @@ import numpy as np
 import pytest
 from npu_precision_utils import compare_rule
 if "Ascend950" in torch_npu.npu.get_device_name():
-    from flash_attn_npu_v4 import flash_attn_varlen_func
+    from flash_attn_npu_4 import flash_attn_varlen_func
 else:
-    from flash_attn_npu_v4 import flash_attn_varlen_func
+    from flash_attn_npu_4 import flash_attn_varlen_func
 
 def group_matmul(head, kv_head, left, right, high_prec = 1):
     group_num = head // kv_head
