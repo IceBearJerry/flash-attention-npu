@@ -247,7 +247,6 @@ mha_fwd(at::Tensor q,   // (b, s_q, h, d) or (total_q, h, d) if there is cu_seql
     softmaxlse.fill_(std::numeric_limits<float>::infinity());
 
     if (scheduler_metadata_.has_value()) {
-        TORCH_CHECK(c10_npu::npuSynchronizeDevice(), "c10_npu::npuSynchronizeDevice failed");
         auto schedMd = scheduler_metadata_.value();
         TORCH_CHECK(schedMd.dtype() == at::kByte, "scheduler_metadata must be a byte tensor");
         TORCH_CHECK(schedMd.is_contiguous(), "scheduler_metadata must be contiguous");

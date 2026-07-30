@@ -1,0 +1,123 @@
+# Copyright (c) 2026, Minghua Shen.
+
+import pytest
+import torch
+import torch_npu
+
+from flash_attn_npu_3 import flash_attn_with_kvcache, get_scheduler_metadata
+from tests.test_flash_attn_npu_v3 import ref_flash_attention
+
+
+RTOL = 1e-2
+ATOL = 1e-2
+DATA_TYPE = torch.bfloat16
+BATCH_SIZE = 1
+NUM_HEADS = 4
+NUM_KV_HEADS = 2
+Q_SEQLEN = 16
+KV_SEQLEN = 128
+HEAD_SIZE = 128
+BLOCK_SIZE = 128
+SCALE = 1.0 / (HEAD_SIZE ** 0.5)
+WINDOW_SIZE = (-1, -1)
+
+
+def _rand_npu(shape):
+    return (2 * torch.rand(shape) - 1).to(DATA_TYPE).npu()
+
+
+def _run_flash_attn(
+    query,
+    key_cache,
+    value_cache,
+    cache_seqlens,
+    page_table,
+    cu_seqlens_q,
+    scheduler_metadata,
+    is_causal,
+):
+    return flash_attn_with_kvcache(
+        query,
+        key_cache,
+        value_cache,
+        cache_seqlens=cache_seqlens,
+        page_table=page_table,
+        cu_seqlens_q=cu_seqlens_q,
+        max_seqlen_q=Q_SEQLEN,
+        softmax_scale=SCALE,
+        causal=is_causal,
+        window_size=WINDOW_SIZE,
+        scheduler_metadata=scheduler_metadata,
+        return_softmax_lse=True,
+    )
+
+
+@pytest.mark.parametrize("is_causal", [False, True])
+def test_flash_attn_kvcache_graph(is_causal):
+    query = _rand_npu((Q_SEQLEN, NUM_HEADS, HEAD_SIZE))
+    key_cache = _rand_npu((BATCH_SIZE, BLOCK_SIZE, NUM_KV_HEADS, HEAD_SIZE))
+    value_cache = _rand_npu((BATCH_SIZE, BLOCK_SIZE, NUM_KV_HEADS, HEAD_SIZE))
+    cache_seqlens = torch.tensor([KV_SEQLEN], dtype=torch.int32).npu()
+    page_table = torch.tensor([[0]], dtype=torch.int32).npu()
+    cu_seqlens_q = torch.tensor([0, Q_SEQLEN], dtype=torch.int32).npu()
+
+    scheduler_metadata = get_scheduler_metadata(
+        batch_size=BATCH_SIZE,
+        max_seqlen_q=Q_SEQLEN,
+        max_seqlen_k=KV_SEQLEN,
+        num_heads_q=NUM_HEADS,
+        num_heads_kv=NUM_KV_HEADS,
+        headdim=HEAD_SIZE,
+        cache_seqlens=cache_seqlens,
+        qkv_dtype=DATA_TYPE,
+        cu_seqlens_q=cu_seqlens_q,
+        page_size=BLOCK_SIZE,
+        causal=is_causal,
+        window_size=WINDOW_SIZE,
+    )
+
+    causal_mask = None
+    if is_causal:
+        causal_mask = torch.triu(
+            torch.ones(Q_SEQLEN, KV_SEQLEN),
+            diagonal=KV_SEQLEN - Q_SEQLEN + 1,
+        ).bool()
+    golden_out, _ = ref_flash_attention(
+        query.cpu(),
+        key_cache[0].cpu(),
+        value_cache[0].cpu(),
+        SCALE,
+        causal_mask,
+        DATA_TYPE,
+        0.0,
+    )
+
+    _run_flash_attn(
+        query,
+        key_cache,
+        value_cache,
+        cache_seqlens,
+        page_table,
+        cu_seqlens_q,
+        scheduler_metadata,
+        is_causal,
+    )
+    torch.npu.synchronize()
+
+    graph = torch.npu.NPUGraph()
+    with torch.npu.graph(graph):
+        output_npu, *_ = _run_flash_attn(
+            query,
+            key_cache,
+            value_cache,
+            cache_seqlens,
+            page_table,
+            cu_seqlens_q,
+            scheduler_metadata,
+            is_causal,
+        )
+
+    graph.replay()
+    torch.npu.synchronize()
+
+    torch.testing.assert_close(output_npu.cpu(), golden_out, rtol=RTOL, atol=ATOL)
