@@ -20,6 +20,31 @@ def round_multiple(x, m):
     return (x + m - 1) // m * m
 
 
+_HEADDIM_BWD_ALIGN = 64
+
+
+def _pad_bwd_headdim(dout, q, k, v, out):
+    """
+    Pad headdim to a multiple of 64 for the bwd kernel.
+    """
+    head_size_og = dout.size(-1)
+    target = round_multiple(
+        max(t.size(-1) for t in (dout, q, k, v, out)),
+        _HEADDIM_BWD_ALIGN,
+    )
+
+    def _pad(t):
+        cur = t.size(-1)
+        if cur == target:
+            return t
+        if cur > target:
+            raise ValueError(f"headdim {cur} > pad target {target}")
+        return torch.nn.functional.pad(t, [0, target - cur])
+
+    return _pad(dout), _pad(q), _pad(k), _pad(v), _pad(out), head_size_og
+
+
+
 # torch.compile() support is only enabled for pytorch >= 2.4
 # The reason for this is that we are using the new custom_op and register_fake
 # APIs, which support inplace modification of inputs in the function itself
@@ -456,14 +481,11 @@ class FlashAttnQKVPackedFunc(torch.autograd.Function):
     @staticmethod
     def backward(ctx, dout, *args):
         q, k, v, out, softmax_lse, rng_state = ctx.saved_tensors
+        dout, q, k, v, out, head_size_og = _pad_bwd_headdim(dout, q, k, v, out)
         qkv_shape = q.shape[:-2] + (3, *q.shape[-2:])
         dqkv = torch.empty(qkv_shape, dtype=q.dtype, device=q.device)
-        head_size_og = dout.size(3)
-        dout_padded = dout
-        if head_size_og % 8 != 0:
-            dout_padded = torch.nn.functional.pad(dout, [0, 8 - head_size_og % 8])
         _wrapped_flash_attn_backward(
-            dout_padded,
+            dout,
             q,
             k,
             v,
@@ -482,7 +504,7 @@ class FlashAttnQKVPackedFunc(torch.autograd.Function):
             ctx.deterministic,
             rng_state=rng_state,
         )
-        dqkv = dqkv[..., : dout.shape[-1]]  # We could have padded the head dimension
+        dqkv = dqkv[..., :head_size_og]  # We could have padded the head dimension
         return dqkv, None, None, None, None, None, None, None, None, None
 
 
@@ -546,14 +568,11 @@ class FlashAttnVarlenQKVPackedFunc(torch.autograd.Function):
     @staticmethod
     def backward(ctx, dout, *args):
         q, k, v, out, softmax_lse, cu_seqlens, rng_state = ctx.saved_tensors
+        dout, q, k, v, out, head_size_og = _pad_bwd_headdim(dout, q, k, v, out)
         qkv_shape = q.shape[:-2] + (3, *q.shape[-2:])
         dqkv = torch.empty(qkv_shape, dtype=q.dtype, device=q.device)
-        head_size_og = dout.size(2)
-        dout_padded = dout
-        if head_size_og % 8 != 0:
-            dout_padded = torch.nn.functional.pad(dout, [0, 8 - head_size_og % 8])
         _wrapped_flash_attn_varlen_backward(
-            dout_padded,
+            dout,
             q,
             k,
             v,
@@ -576,7 +595,7 @@ class FlashAttnVarlenQKVPackedFunc(torch.autograd.Function):
             ctx.deterministic,
             rng_state=rng_state,
         )
-        dqkv = dqkv[..., : dout.shape[-1]]  # We could have padded the head dimension
+        dqkv = dqkv[..., :head_size_og]  # We could have padded the head dimension
         return dqkv, None, None, None, None, None, None, None, None, None, None, None
 
 
@@ -635,15 +654,12 @@ class FlashAttnKVPackedFunc(torch.autograd.Function):
     @staticmethod
     def backward(ctx, dout, *args):
         q, k, v, out, softmax_lse, rng_state = ctx.saved_tensors
+        dout, q, k, v, out, head_size_og = _pad_bwd_headdim(dout, q, k, v, out)
         dq = torch.empty_like(q)
         kv_shape = k.shape[:-2] + (2, *k.shape[-2:])
         dkv = torch.empty(kv_shape, dtype=k.dtype, device=k.device)
-        head_size_og = dout.size(3)
-        dout_padded = dout
-        if head_size_og % 8 != 0:
-            dout_padded = torch.nn.functional.pad(dout, [0, 8 - head_size_og % 8])
         _wrapped_flash_attn_backward(
-            dout_padded,
+            dout,
             q,
             k,
             v,
@@ -662,8 +678,8 @@ class FlashAttnKVPackedFunc(torch.autograd.Function):
             ctx.deterministic,
             rng_state=rng_state,
         )
-        dq = dq[..., : dout.shape[-1]]  # We could have padded the head dimension
-        dkv = dkv[..., : dout.shape[-1]]
+        dq = dq[..., :head_size_og]  # We could have padded the head dimension
+        dkv = dkv[..., :head_size_og]
         return dq, dkv, None, None, None, None, None, None, None, None, None
 
 
@@ -735,15 +751,12 @@ class FlashAttnVarlenKVPackedFunc(torch.autograd.Function):
     @staticmethod
     def backward(ctx, dout, *args):
         q, k, v, out, softmax_lse, cu_seqlens_q, cu_seqlens_k, rng_state = ctx.saved_tensors
+        dout, q, k, v, out, head_size_og = _pad_bwd_headdim(dout, q, k, v, out)
         dq = torch.empty_like(q)
         kv_shape = k.shape[:-2] + (2, *k.shape[-2:])
         dkv = torch.empty(kv_shape, dtype=k.dtype, device=k.device)
-        head_size_og = dout.size(2)
-        dout_padded = dout
-        if head_size_og % 8 != 0:
-            dout_padded = torch.nn.functional.pad(dout, [0, 8 - head_size_og % 8])
         _wrapped_flash_attn_varlen_backward(
-            dout_padded,
+            dout,
             q,
             k,
             v,
@@ -766,8 +779,8 @@ class FlashAttnVarlenKVPackedFunc(torch.autograd.Function):
             ctx.deterministic,
             rng_state=rng_state,
         )
-        dq = dq[..., : dout.shape[-1]]  # We could have padded the head dimension
-        dkv = dkv[..., : dout.shape[-1]]
+        dq = dq[..., :head_size_og]  # We could have padded the head dimension
+        dkv = dkv[..., :head_size_og]
         return dq, dkv, None, None, None, None, None, None, None, None, None, None, None, None, None
 
 
@@ -826,13 +839,10 @@ class FlashAttnFunc(torch.autograd.Function):
     @staticmethod
     def backward(ctx, dout, *args):
         q, k, v, out, softmax_lse, rng_state = ctx.saved_tensors
+        dout, q, k, v, out, head_size_og = _pad_bwd_headdim(dout, q, k, v, out)
         dq, dk, dv = torch.empty_like(q), torch.empty_like(k), torch.empty_like(v)
-        head_size_og = dout.size(3)
-        dout_padded = dout
-        if head_size_og % 8 != 0:
-            dout_padded = torch.nn.functional.pad(dout, [0, 8 - head_size_og % 8])
         _wrapped_flash_attn_backward(
-            dout_padded,
+            dout,
             q,
             k,
             v,
@@ -851,9 +861,9 @@ class FlashAttnFunc(torch.autograd.Function):
             ctx.deterministic,
             rng_state=rng_state,
         )
-        dq = dq[..., : dout.shape[-1]]  # We could have padded the head dimension
-        dk = dk[..., : dout.shape[-1]]
-        dv = dv[..., : dout.shape[-1]]
+        dq = dq[..., :head_size_og]  # We could have padded the head dimension
+        dk = dk[..., :head_size_og]
+        dv = dv[..., :head_size_og]
         return dq, dk, dv, None, None, None, None, None, None, None, None, None
 
 
@@ -927,13 +937,10 @@ class FlashAttnVarlenFunc(torch.autograd.Function):
     @staticmethod
     def backward(ctx, dout, *args):
         q, k, v, out, softmax_lse, cu_seqlens_q, cu_seqlens_k, rng_state = ctx.saved_tensors
+        dout, q, k, v, out, head_size_og = _pad_bwd_headdim(dout, q, k, v, out)
         dq, dk, dv = torch.empty_like(q), torch.empty_like(k), torch.empty_like(v)
-        head_size_og = dout.size(2)
-        dout_padded = dout
-        if head_size_og % 8 != 0:
-            dout_padded = torch.nn.functional.pad(dout, [0, 8 - head_size_og % 8])
         _wrapped_flash_attn_varlen_backward(
-            dout_padded,
+            dout,
             q,
             k,
             v,
@@ -956,9 +963,9 @@ class FlashAttnVarlenFunc(torch.autograd.Function):
             ctx.deterministic,
             rng_state=rng_state,
         )
-        dq = dq[..., : dout.shape[-1]]  # We could have padded the head dimension
-        dk = dk[..., : dout.shape[-1]]
-        dv = dv[..., : dout.shape[-1]]
+        dq = dq[..., :head_size_og]  # We could have padded the head dimension
+        dk = dk[..., :head_size_og]
+        dv = dv[..., :head_size_og]
         return dq, dk, dv, None, None, None, None, None, None, None, None, None, None, None, None, None, None
 
 

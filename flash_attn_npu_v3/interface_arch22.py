@@ -39,6 +39,30 @@ def round_multiple(x, m):
     return (x + m - 1) // m * m
 
 
+_HEADDIM_BWD_ALIGN = 64
+
+
+def _pad_bwd_headdim(dout, q, k, v, out):
+    """
+    Pad headdim to a multiple of 64 for the bwd kernel.
+    """
+    head_size_og = dout.size(-1)
+    target = round_multiple(
+        max(t.size(-1) for t in (dout, q, k, v, out)),
+        _HEADDIM_BWD_ALIGN,
+    )
+
+    def _pad(t):
+        cur = t.size(-1)
+        if cur == target:
+            return t
+        if cur > target:
+            raise ValueError(f"headdim {cur} > pad target {target}")
+        return torch.nn.functional.pad(t, [0, target - cur])
+
+    return _pad(dout), _pad(q), _pad(k), _pad(v), _pad(out), head_size_og
+
+
 def round_up_headdim(head_size: int) -> int:
     from flash_attn_config import CONFIG
 
@@ -409,6 +433,7 @@ def setup_context(ctx, inputs, output):
 
 def _backward(ctx, dout, *grads):
     q, k, v, out, softmax_lse = ctx.saved_tensors
+    dout, q, k, v, out, head_size_og = _pad_bwd_headdim(dout, q, k, v, out)
     dq, dk, dv = torch.empty_like(q), torch.empty_like(k), torch.empty_like(v)
     _flash_attn_backward(
         dout,
@@ -431,6 +456,9 @@ def _backward(ctx, dout, *grads):
         False, # deterministic
         ctx.sm_margin,
     )
+    dq = dq[..., :head_size_og]
+    dk = dk[..., :head_size_og]
+    dv = dv[..., :head_size_og]
     return dq, dk, dv, *((None,) * 21)
 
 
@@ -498,6 +526,7 @@ class FlashAttnQKVPackedFunc(torch.autograd.Function):
     def backward(ctx, dout, *args):
         q, k, v, out, softmax_lse = ctx.saved_tensors
         assert ctx.attention_chunk == 0, "FA3 backward does not support attention_chunk"
+        dout, q, k, v, out, head_size_og = _pad_bwd_headdim(dout, q, k, v, out)
         if ctx.ndim == 5:
             qkv_shape = q.shape[:-2] + (3, *q.shape[-2:])
             dqkv = torch.empty(qkv_shape, dtype=q.dtype, device=q.device)
@@ -529,7 +558,7 @@ class FlashAttnQKVPackedFunc(torch.autograd.Function):
             ctx.deterministic,
             ctx.sm_margin,
         )
-        dqkv = dqkv[..., : dout.shape[-1]]  # We could have padded the head dimension
+        dqkv = dqkv[..., :head_size_og]  # We could have padded the head dimension
         return dqkv, None, None, None, None, None, None, None, None, None, None, None, None
 
 
@@ -597,6 +626,7 @@ class FlashAttnFunc(torch.autograd.Function):
     def backward(ctx, dout, *args):
         q, k, v, out, softmax_lse = ctx.saved_tensors
         assert ctx.attention_chunk == 0, "FA3 backward does not support attention_chunk"
+        dout, q, k, v, out, head_size_og = _pad_bwd_headdim(dout, q, k, v, out)
         dq, dk, dv = torch.empty_like(q), torch.empty_like(k), torch.empty_like(v)
         _flash_attn_backward(
             dout,
@@ -619,9 +649,9 @@ class FlashAttnFunc(torch.autograd.Function):
             ctx.deterministic,
             ctx.sm_margin,
         )
-        dq = dq[..., : q.shape[-1]]  # We could have padded the head dimension
-        dk = dk[..., : k.shape[-1]]
-        dv = dv[..., : v.shape[-1]]
+        dq = dq[..., :head_size_og]  # We could have padded the head dimension
+        dk = dk[..., :head_size_og]
+        dv = dv[..., :head_size_og]
         return dq, dk, dv, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None
 
 
@@ -701,6 +731,7 @@ class FlashAttnVarlenFunc(torch.autograd.Function):
     def backward(ctx, dout, *args):
         q, k, v, out, softmax_lse, cu_seqlens_q, cu_seqlens_k, seqused_q, seqused_k = ctx.saved_tensors
         assert ctx.attention_chunk == 0, "FA3 backward does not support attention_chunk"
+        dout, q, k, v, out, head_size_og = _pad_bwd_headdim(dout, q, k, v, out)
         dq, dk, dv = torch.empty_like(q), torch.empty_like(k), torch.empty_like(v)
         _flash_attn_backward(
             dout,
@@ -726,9 +757,9 @@ class FlashAttnVarlenFunc(torch.autograd.Function):
             ctx.deterministic,
             ctx.sm_margin,
         )
-        dq = dq[..., : q.shape[-1]]  # We could have padded the head dimension
-        dk = dk[..., : k.shape[-1]]
-        dv = dv[..., : v.shape[-1]]
+        dq = dq[..., :head_size_og]  # We could have padded the head dimension
+        dk = dk[..., :head_size_og]
+        dv = dv[..., :head_size_og]
         return dq, dk, dv, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None
 
 
