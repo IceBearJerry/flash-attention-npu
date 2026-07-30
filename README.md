@@ -53,6 +53,9 @@ FLASH_ATTN_BUILD_VERSION=v2 python setup.py install
 
 # Build v3 only
 FLASH_ATTN_BUILD_VERSION=v3 python setup.py install
+
+# Build v4 only
+FLASH_ATTN_BUILD_VERSION=v4 python setup.py install
 ```
 
 ## Testing
@@ -553,25 +556,25 @@ def flash_attn_varlen_func(
     max_seqlen_q: Optional[int] = None,
     max_seqlen_k: Optional[int] = None,
     min_seqlen_k: Optional[int] = None,
-    seqused_q=None,
-    seqused_k=None,
+    seqused_q: Optional[torch.Tensor] = None,
+    seqused_k: Optional[torch.Tensor] = None,
     gather_kv_indices: Optional[torch.Tensor] = None,
     page_table: Optional[torch.Tensor] = None,
-    softmax_scale=None,
-    causal:bool = False,
+    softmax_scale: Optional[float] = None,
+    causal: bool = False,
     window_size=(-1, -1),  # -1 means infinite context window
     learnable_sink: Optional[torch.Tensor] = None,
     softcap=0.0, # 0.0 means deactivated
     num_splits=0,    # Can be tuned for speed
-    pack_gqa=None,   # Can be tuned for speed
-    deterministic:bool = False, 
-    score_mod=None,
-    score_mod_bwd=None,
-    mask_mod=None,
+    pack_gqa: Optional[bool] = None,
+    deterministic: bool = False,
+    score_mod: Optional[Callable] = None,
+    score_mod_bwd: Optional[Callable] = None,
+    mask_mod: Optional[Callable] = None,
     block_sparse_tensors=None,
     aux_tensors: Optional[list] = None,
     aux_scalars: Optional[tuple] = None,
-    return_lse:bool = False,
+    return_lse: bool = False,
 ):
     """
     FlashAttention for variable-length sequences with optional paged KV cache.
@@ -601,8 +604,6 @@ def flash_attn_varlen_func(
     If window_size != (-1, -1), implements sliding window local attention. Query at position i
     will only attend to keys between
     [i + seqlen_k - seqlen_q - window_size[0], i + seqlen_k - seqlen_q + window_size[1]] inclusive.
-
-    Note: Does not support backward pass.
 
     Arguments:
         q: (batch_size, seqlen, nheads, headdim) or (total_q, nheads, headdim) if cu_seqlens_q
@@ -637,7 +638,7 @@ def flash_attn_varlen_func(
         num_splits: int. If > 1, split the key/value into this many chunks along the sequence.
             If num_splits == 0, use a heuristic to automatically determine the number of splits.
         pack_gqa: bool. If True, pack GQA for better performance. (Not supported on NPU)
-        deterministic: bool. Whether to use deterministic backward pass. (Not supported on NPU)
+        deterministic: bool. Whether to use deterministic backward pass.
         score_mod: Optional callable. Custom score modification. (Not supported on NPU)
         score_mod_bwd: Optional callable. Custom score modification for backward. (Not supported on NPU)
         mask_mod: Optional callable. Custom attention mask. (Not supported on NPU)
@@ -648,9 +649,9 @@ def flash_attn_varlen_func(
 
     Return:
         out: (batch_size, seqlen, nheads, headdim_v) or (total_q, nheads, headdim_v) if varlen.
-        softmax_lse [optional, if return_lse=True]: (batch_size, nheads, seqlen). The
-            logsumexp of each row of the matrix QK^T * scaling (e.g., log of the softmax
-            normalization factor).
+        softmax_lse [optional, if return_lse=True]: (batch_size, nheads, seqlen) or
+            (nheads, total_q) for varlen. The logsumexp of each row of the matrix
+            QK^T * scaling (e.g., log of the softmax normalization factor).
     """
 ```
 
@@ -693,7 +694,7 @@ def flash_attn_varlen_func(
 | Causal Attention | ✅ | ✅ | ✅ |
 | Sliding Window Attention | ✅ | ✅ | ✅ |
 | MQA/GQA | ✅ | ✅ | ✅ |
-| Backward Pass | ✅ | ✅ | - |
+| Backward Pass | ✅ | ✅ | ✅ |
 | Variable-length Sequences | ✅ | ✅ | ✅ |
 | Paged KV Cache | - | - | ✅ |
 | ALiBi | - | - | - |

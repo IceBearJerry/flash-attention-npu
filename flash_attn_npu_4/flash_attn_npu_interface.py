@@ -1,10 +1,9 @@
 # Copyright (c) 2023, Tri Dao.
 # Modified by Minghua Shen, 2026
 
-from typing import Optional, Union, List, Tuple
+from typing import Any, Callable, Optional, Tuple
 
 import torch
-import torch.nn as nn
 
 # isort: off
 # We need to import the kernels after importing torch
@@ -32,7 +31,38 @@ def round_multiple(x, m):
     return (x + m - 1) // m * m
 
 
-@_torch_custom_op_wrapper("flash_attn_npu_4::_flash_attn_forward", mutates_args=(), device_types="npu")
+_HEADDIM_BWD_ALIGN = 64
+
+
+def _pad_bwd_headdim(dout, q, k, v, out):
+    """Pad headdim to a multiple of 64 for the FAG bwd kernel."""
+    head_size_og = dout.size(-1)
+    target = round_multiple(
+        max(t.size(-1) for t in (dout, q, k, v, out)),
+        _HEADDIM_BWD_ALIGN,
+    )
+
+    def _pad(t):
+        cur = t.size(-1)
+        if cur == target:
+            return t
+        if cur > target:
+            raise ValueError(f"headdim {cur} > pad target {target}")
+        return torch.nn.functional.pad(t, [0, target - cur])
+
+    return _pad(dout), _pad(q), _pad(k), _pad(v), _pad(out), head_size_og
+
+
+def _window_to_npu(window_size: Optional[int]) -> int:
+    """FA4 uses None; FAG kernel uses -1 for 'disabled'."""
+    return -1 if window_size is None else int(window_size)
+
+
+@_torch_custom_op_wrapper(
+    "flash_attn_npu_arch22_v4::_flash_attn_forward",
+    mutates_args=(),
+    device_types="npu",
+)
 def _flash_attn_forward(
     q: torch.Tensor,
     k: torch.Tensor,
@@ -89,6 +119,177 @@ def _flash_attn_forward(
         learnable_sink,
     )
     return out, softmax_lse
+
+
+@_torch_custom_op_wrapper(
+    "flash_attn_npu_arch22_v4::_flash_attn_backward_op",
+    mutates_args=("dq", "dk", "dv"),
+    device_types="npu",
+)
+def _flash_attn_backward_op(
+    dout: torch.Tensor,
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    out: torch.Tensor,
+    softmax_lse: torch.Tensor,
+    cu_seqlens_q: Optional[torch.Tensor],
+    cu_seqlens_k: Optional[torch.Tensor],
+    max_seqlen_q: Optional[int],
+    max_seqlen_k: Optional[int],
+    dq: torch.Tensor,
+    dk: torch.Tensor,
+    dv: torch.Tensor,
+    softmax_scale: Optional[float],
+    causal: bool,
+    window_size_left: int,
+    window_size_right: int,
+    softcap: float,
+    deterministic: bool,
+) -> torch.Tensor:
+    dout, q, k, v, out = [maybe_contiguous(x) for x in (dout, q, k, v, out)]
+    _dq, _dk, _dv, softmax_d = flash_attn_npu_arch22_v4.bwd(
+        dout,
+        q,
+        k,
+        v,
+        out,
+        softmax_lse,
+        dq,
+        dk,
+        dv,
+        cu_seqlens_q,
+        cu_seqlens_k,
+        None,  # seqused_q
+        None,  # seqused_k
+        max_seqlen_q,
+        max_seqlen_k,
+        softmax_scale,
+        causal,
+        window_size_left,
+        window_size_right,
+        softcap,
+        deterministic,
+        0,  # sm_margin
+    )
+    return softmax_d
+
+
+def _flash_attn_backward(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    out: torch.Tensor,
+    dout: torch.Tensor,
+    lse: torch.Tensor,
+    softmax_scale: Optional[float] = None,
+    causal: bool = False,
+    softcap: float = 0.0,
+    window_size_left: Optional[int] = None,
+    window_size_right: Optional[int] = None,
+    m_block_size: int = 64,
+    n_block_size: int = 128,
+    num_threads: int = 256,
+    pack_gqa: bool = False,
+    num_stages_Q: int = 2,
+    num_stages_dO: int = 2,
+    SdP_swapAB: bool = False,
+    dKV_swapAB: bool = False,
+    dQ_swapAB: bool = False,
+    AtomLayoutMSdP: int = 2,
+    AtomLayoutNdKV: int = 2,
+    AtomLayoutMdQ: int = 2,
+    V_in_regs: bool = False,
+    cu_seqlens_q: Optional[torch.Tensor] = None,
+    cu_seqlens_k: Optional[torch.Tensor] = None,
+    seqused_q: Optional[torch.Tensor] = None,
+    seqused_k: Optional[torch.Tensor] = None,
+    max_seqlen_q: Optional[int] = None,
+    max_seqlen_k: Optional[int] = None,
+    deterministic: bool = False,
+    dq: Optional[torch.Tensor] = None,
+    dk: Optional[torch.Tensor] = None,
+    dv: Optional[torch.Tensor] = None,
+    score_mod: Optional[Callable] = None,
+    score_mod_bwd: Optional[Callable] = None,
+    mask_mod: Optional[Callable] = None,
+    aux_tensors: Optional[list] = None,
+    aux_scalars: Optional[tuple] = None,
+    block_sparse_tensors: Optional[Any] = None,
+    dlse: Optional[torch.Tensor] = None,
+    qv: Optional[torch.Tensor] = None,
+    page_table: Optional[torch.Tensor] = None,
+    gather_kv_indices: Optional[torch.Tensor] = None,
+    learnable_sink: Optional[torch.Tensor] = None,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """FA4-aligned backward wrapper around FAG_v4. Returns (dq, dk, dv)."""
+    del (
+        m_block_size,
+        n_block_size,
+        num_threads,
+        num_stages_Q,
+        num_stages_dO,
+        SdP_swapAB,
+        dKV_swapAB,
+        dQ_swapAB,
+        AtomLayoutMSdP,
+        AtomLayoutNdKV,
+        AtomLayoutMdQ,
+        V_in_regs,
+    )
+
+    # Unsupported FA4 / Phase-0 knobs: assert here.
+    assert score_mod is None, "flash_attn_npu_v4 bwd does not support score_mod"
+    assert score_mod_bwd is None, "flash_attn_npu_v4 bwd does not support score_mod_bwd"
+    assert mask_mod is None, "flash_attn_npu_v4 bwd does not support mask_mod"
+    assert aux_tensors is None, "flash_attn_npu_v4 bwd does not support aux_tensors"
+    assert aux_scalars is None, "flash_attn_npu_v4 bwd does not support aux_scalars"
+    assert block_sparse_tensors is None, "flash_attn_npu_v4 bwd does not support block_sparse_tensors"
+    assert dlse is None, "flash_attn_npu_v4 bwd does not support dlse"
+    assert seqused_q is None, "flash_attn_npu_v4 bwd does not support seqused_q"
+    assert seqused_k is None, "flash_attn_npu_v4 bwd does not support seqused_k"
+    assert not pack_gqa, "flash_attn_npu_v4 bwd does not support pack_gqa=True"
+    assert qv is None, "flash_attn_npu_v4 bwd does not support qv"
+    assert page_table is None, "flash_attn_npu_v4 bwd does not support page_table"
+    assert gather_kv_indices is None, "flash_attn_npu_v4 bwd does not support gather_kv_indices"
+    assert learnable_sink is None, "flash_attn_npu_v4 bwd does not support learnable_sink"
+    assert softcap is None or float(softcap) == 0.0, (
+        "flash_attn_npu_v4 bwd does not support softcap>0 "
+        "(FAI forward does not wire softcap yet)"
+    )
+
+    if dq is None:
+        dq = torch.empty_like(q)
+    if dk is None:
+        dk = torch.empty_like(k)
+    if dv is None:
+        dv = torch.empty_like(v)
+
+    _flash_attn_backward_op(
+        dout,
+        q,
+        k,
+        v,
+        out,
+        lse,
+        cu_seqlens_q,
+        cu_seqlens_k,
+        max_seqlen_q,
+        max_seqlen_k,
+        dq,
+        dk,
+        dv,
+        softmax_scale,
+        causal,
+        _window_to_npu(window_size_left),
+        _window_to_npu(window_size_right),
+        softcap,
+        deterministic,
+    )
+    return dq, dk, dv
+
+
+_flash_attn_bwd = _flash_attn_backward
 
 
 class FlashAttnVarlenFunc(torch.autograd.Function):
@@ -159,7 +360,112 @@ class FlashAttnVarlenFunc(torch.autograd.Function):
             pack_gqa=pack_gqa,
             learnable_sink=learnable_sink,
         )
+
+        ctx.save_for_backward(
+            q, k, v, out, softmax_lse, cu_seqlens_q, cu_seqlens_k, seqused_q, seqused_k
+        )
+        ctx.max_seqlen_q = max_seqlen_q
+        ctx.max_seqlen_k = max_seqlen_k
+        ctx.softmax_scale = softmax_scale
+        ctx.causal = causal
+        ctx.window_size = window_size
+        ctx.softcap = softcap
+        ctx.deterministic = deterministic
+        ctx.return_lse = return_lse
+        ctx.pack_gqa = pack_gqa
+        ctx.qv = qv
+        ctx.page_table = page_table
+        ctx.gather_kv_indices = gather_kv_indices
+        ctx.learnable_sink = learnable_sink
+        ctx.score_mod = score_mod
+        ctx.score_mod_bwd = score_mod_bwd
+        ctx.mask_mod = mask_mod
+        ctx.block_sparse_tensors = block_sparse_tensors
+        ctx.aux_tensors = aux_tensors
+        ctx.aux_scalars = aux_scalars
         return (out, softmax_lse) if return_lse else out
+
+    @staticmethod
+    def backward(ctx, dout, *args):
+        q, k, v, out, softmax_lse, cu_seqlens_q, cu_seqlens_k, seqused_q, seqused_k = (
+            ctx.saved_tensors
+        )
+        # torch_npu may pass a zero tensor (not None) for unused LSE grads.
+        dlse = args[0] if ctx.return_lse and len(args) > 0 else None
+        if dlse is not None and torch.is_tensor(dlse) and float(dlse.detach().abs().sum()) == 0.0:
+            dlse = None
+        win_l, win_r = ctx.window_size
+        if win_l is not None and win_l < 0:
+            win_l = None
+        if win_r is not None and win_r < 0:
+            win_r = None
+
+        dout, q, k, v, out, head_size_og = _pad_bwd_headdim(dout, q, k, v, out)
+        dq, dk, dv = _flash_attn_backward(
+            q,
+            k,
+            v,
+            out,
+            dout,
+            softmax_lse,
+            softmax_scale=ctx.softmax_scale,
+            causal=ctx.causal,
+            softcap=ctx.softcap,
+            window_size_left=win_l,
+            window_size_right=win_r,
+            cu_seqlens_q=cu_seqlens_q,
+            cu_seqlens_k=cu_seqlens_k,
+            seqused_q=seqused_q,
+            seqused_k=seqused_k,
+            max_seqlen_q=ctx.max_seqlen_q,
+            max_seqlen_k=ctx.max_seqlen_k,
+            deterministic=ctx.deterministic,
+            pack_gqa=bool(ctx.pack_gqa) if ctx.pack_gqa is not None else False,
+            score_mod=ctx.score_mod,
+            score_mod_bwd=ctx.score_mod_bwd,
+            mask_mod=ctx.mask_mod,
+            aux_tensors=ctx.aux_tensors,
+            aux_scalars=ctx.aux_scalars,
+            block_sparse_tensors=ctx.block_sparse_tensors,
+            dlse=dlse,
+            qv=ctx.qv,
+            page_table=ctx.page_table,
+            gather_kv_indices=ctx.gather_kv_indices,
+            learnable_sink=ctx.learnable_sink,
+        )
+        dq = dq[..., :head_size_og]
+        dk = dk[..., :head_size_og]
+        dv = dv[..., :head_size_og]
+        return (
+            dq,
+            dk,
+            dv,
+            None,  # qv
+            None,  # cu_seqlens_q
+            None,  # cu_seqlens_k
+            None,  # max_seqlen_q
+            None,  # max_seqlen_k
+            None,  # min_seqlen_k
+            None,  # seqused_q
+            None,  # seqused_k
+            None,  # gather_kv_indices
+            None,  # page_table
+            None,  # softmax_scale
+            None,  # causal
+            None,  # window_size
+            None,  # learnable_sink
+            None,  # softcap
+            None,  # num_splits
+            None,  # pack_gqa
+            None,  # deterministic
+            None,  # score_mod
+            None,  # score_mod_bwd
+            None,  # mask_mod
+            None,  # block_sparse_tensors
+            None,  # aux_tensors
+            None,  # aux_scalars
+            None,  # return_lse
+        )
 
 
 def flash_attn_varlen_func(
@@ -190,7 +496,7 @@ def flash_attn_varlen_func(
     block_sparse_tensors=None,
     aux_tensors: Optional[list] = None,
     aux_scalars: Optional[tuple] = None,
-    return_lse:bool = False,
+    return_lse: bool = False,
 ):
     """
     FlashAttention for variable-length sequences with optional paged KV cache.
@@ -220,8 +526,6 @@ def flash_attn_varlen_func(
     If window_size != (-1, -1), implements sliding window local attention. Query at position i
     will only attend to keys between
     [i + seqlen_k - seqlen_q - window_size[0], i + seqlen_k - seqlen_q + window_size[1]] inclusive.
-
-    Note: Does not support backward pass.
 
     Arguments:
         q: (batch_size, seqlen, nheads, headdim) or (total_q, nheads, headdim) if cu_seqlens_q
@@ -256,7 +560,7 @@ def flash_attn_varlen_func(
         num_splits: int. If > 1, split the key/value into this many chunks along the sequence.
             If num_splits == 0, use a heuristic to automatically determine the number of splits.
         pack_gqa: bool. If True, pack GQA for better performance. (Not supported on NPU)
-        deterministic: bool. Whether to use deterministic backward pass. (Not supported on NPU)
+        deterministic: bool. Whether to use deterministic backward pass.
         score_mod: Optional callable. Custom score modification. (Not supported on NPU)
         score_mod_bwd: Optional callable. Custom score modification for backward. (Not supported on NPU)
         mask_mod: Optional callable. Custom attention mask. (Not supported on NPU)
@@ -267,9 +571,9 @@ def flash_attn_varlen_func(
 
     Return:
         out: (batch_size, seqlen, nheads, headdim_v) or (total_q, nheads, headdim_v) if varlen.
-        softmax_lse [optional, if return_lse=True]: (batch_size, nheads, seqlen). The
-            logsumexp of each row of the matrix QK^T * scaling (e.g., log of the softmax
-            normalization factor).
+        softmax_lse [optional, if return_lse=True]: (batch_size, nheads, seqlen) or
+            (nheads, total_q) for varlen. The logsumexp of each row of the matrix
+            QK^T * scaling (e.g., log of the softmax normalization factor).
     """
     return FlashAttnVarlenFunc.apply(
         q,
