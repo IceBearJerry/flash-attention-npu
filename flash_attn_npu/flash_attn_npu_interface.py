@@ -9,7 +9,7 @@ import os
 
 # isort: off
 # We need to import the kernels after importing torch
-import flash_attn_npu
+from . import flash_attn_npu
 # isort: on
 
 def maybe_contiguous(x):
