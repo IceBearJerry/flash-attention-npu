@@ -4,7 +4,7 @@ import pytest
 import torch
 import torch_npu
 
-from flash_attn_npu_v3 import (
+from flash_attn_npu_3 import (
     flash_attn_func,
     flash_attn_varlen_func,
     flash_attn_with_kvcache,

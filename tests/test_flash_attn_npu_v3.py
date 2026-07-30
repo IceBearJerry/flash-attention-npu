@@ -6,9 +6,9 @@ import torch
 import torch_npu
 import pytest
 if "Ascend950" in torch_npu.npu.get_device_name():
-    from flash_attn_npu_v3 import flash_attn_with_kvcache
+    from flash_attn_npu_3 import flash_attn_with_kvcache
 else:
-    from flash_attn_npu_v3 import flash_attn_with_kvcache, flash_attn_func, flash_attn_varlen_func
+    from flash_attn_npu_3 import flash_attn_with_kvcache, flash_attn_func, flash_attn_varlen_func
 
 def group_matmul(head, kv_head, left, right, high_prec = 1):
     group_num = head // kv_head
