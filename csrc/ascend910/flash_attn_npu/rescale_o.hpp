@@ -422,11 +422,11 @@ public:
                     uint32_t end = proTokenNum;
                     AscendC::PipeBarrier<PIPE_V>();
                     AscendC::Duplicate<ElementOutput>(
-                        goUbTensor16[innerGOUbOffset + start * embed],
+                        goUbTensor16[innerGOUbOffset + start * embedRound],
                         static_cast<ElementOutput>(0),
-                        (end - start) * embed
+                        (end - start) * embedRound
                     );
-                    innerGOUbOffset += proTokenNum * embed;
+                    innerGOUbOffset += proTokenNum * embedRound;
                 }
                 if (subBlockStart + qSThisSubBlock >= delStartRow) {
                     for (uint32_t qN_idx = 0; qN_idx < integralHeadNum; qN_idx++) {
@@ -434,11 +434,11 @@ public:
                         uint32_t end = qSThisSubBlock;
                         AscendC::PipeBarrier<PIPE_V>();
                         AscendC::Duplicate<ElementOutput>(
-                            goUbTensor16[innerGOUbOffset + start  * embed],
+                            goUbTensor16[innerGOUbOffset + start  * embedRound],
                             static_cast<ElementOutput>(0),
-                            (end - start) * embed
+                            (end - start) * embedRound
                         );
-                        innerGOUbOffset += qSThisSubBlock * embed;
+                        innerGOUbOffset += qSThisSubBlock * embedRound;
                     }
                 }
                 if (epiTokenNum != 0U && subBlockStart + epiTokenNum >= delStartRow) {
@@ -446,9 +446,9 @@ public:
                     uint32_t end = epiTokenNum;
                     AscendC::PipeBarrier<PIPE_V>();
                     AscendC::Duplicate<ElementOutput>(
-                        goUbTensor16[innerGOUbOffset + start * embed],
+                        goUbTensor16[innerGOUbOffset + start * embedRound],
                         static_cast<ElementOutput>(0),
-                        (end - start) * embed
+                        (end - start) * embedRound
                     );
                 }
             }
@@ -462,9 +462,9 @@ public:
                     AscendC::Duplicate<ElementOutput>(
                         goUbTensor16[innerGOUbOffset],
                         static_cast<ElementOutput>(0),
-                        (end - start) * embed
+                        (end - start) * embedRound
                     );
-                    innerGOUbOffset += proTokenNum * embed;
+                    innerGOUbOffset += proTokenNum * embedRound;
                 }
                 if (subBlockStart < delEndRow) {
                     for (uint32_t qN_idx = 0; qN_idx < integralHeadNum; qN_idx++) {
@@ -476,9 +476,9 @@ public:
                         AscendC::Duplicate<ElementOutput>(
                             goUbTensor16[innerGOUbOffset],
                             static_cast<ElementOutput>(0),
-                            (end - start) * embed
+                            (end - start) * embedRound
                         );
-                        innerGOUbOffset += qSThisSubBlock * embed;
+                        innerGOUbOffset += qSThisSubBlock * embedRound;
                     }
                 }
                 if (epiTokenNum != 0U && subBlockStart < delEndRow) {
@@ -489,7 +489,7 @@ public:
                     AscendC::Duplicate<ElementOutput>(
                         goUbTensor16[innerGOUbOffset],
                         static_cast<ElementOutput>(0),
-                        (end - start) * embed
+                        (end - start) * embedRound
                     );
                 }
             }
