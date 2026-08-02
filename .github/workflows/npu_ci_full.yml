@@ -1,0 +1,157 @@
+name: NPU CI Full
+
+# 全量测试 workflow。手动触发, 不需要 PR。
+# 选择测试文件、arch、workers, 跑该文件的全量用例 (原始 test_cases)。
+#
+# 触发: Actions -> NPU CI Full -> Run workflow
+
+on:
+  workflow_dispatch:
+    inputs:
+      test_file:
+        description: "测试文件 (tests/ 下的文件名, 如 test_flash_attn_npu_v3.py)"
+        required: true
+        type: choice
+        default: test_flash_attn_npu_v3.py
+        options:
+          - ALL
+          - test_flash_attn_npu_v2.py
+          - test_flash_attn_npu_v3.py
+          - test_flash_attn_npu_v4.py
+          - test_flash_attn_npu_v2_bwd.py
+          - test_flash_attn_npu_v3_bwd.py
+          - test_flash_attn_npu_v3_metadata.py
+          - test_flash_attn_npu_v3_graph.py
+      test_filter:
+        description: "pytest -k 过滤表达式 (留空跑全量, 如 test_fa_fwd_custom_ops)"
+        required: false
+        type: string
+        default: ""
+      arch:
+        description: "跑哪个架构 (910 只跑910B, 950 只跑950, both 都跑)"
+        required: false
+        type: choice
+        default: both
+        options:
+          - both
+          - 910
+          - 950
+      workers:
+        description: "pytest-xdist 并行进程数 (默认 2)"
+        required: false
+        type: string
+        default: "2"
+      ref:
+        description: "git ref (分支名/tag/commit, 默认 main)"
+        required: false
+        type: string
+        default: "main"
+
+jobs:
+  run:
+    name: Full CI (${{ matrix.arch_label }})
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+          - arch_label: x86_64-950
+            runs_on: '["self-hosted", "linux", "x64", "npu", "flash-attention-npu"]'
+            docker_image: fa-npu-ci:950-cann9.1-torch2.9
+            require_healthy: "true"
+            max_tasks: "6"
+          - arch_label: aarch64-910B
+            runs_on: '["self-hosted", "linux", "arm64", "npu", "flash-attention-npu"]'
+            docker_image: fa-npu-ci:910b-cann9.1-torch2.9
+            require_healthy: "false"
+            max_tasks: "4"
+    runs-on: ${{ fromJSON(matrix.runs_on) }}
+    timeout-minutes: 600
+    env:
+      CI_DOCKER_IMAGE: ${{ matrix.docker_image }}
+      CI_REQUIRE_HEALTHY_NPU: ${{ matrix.require_healthy }}
+      CI_NPU_MAX_TASKS: ${{ matrix.max_tasks }}
+      CI_TEST_DIRECT_FILE: ${{ github.event.inputs.test_file == 'ALL' && 'tests/' || format('tests/{0}', github.event.inputs.test_file) }}
+      CI_TEST_DIRECT_FILTER: ${{ github.event.inputs.test_filter }}
+      CI_TEST_WORKERS: ${{ github.event.inputs.workers }}
+      CI_REF: ${{ github.event.inputs.ref }}
+    steps:
+      - name: Check arch match
+        id: arch
+        run: |
+          arch="${{ github.event.inputs.arch }}"
+          label="${{ matrix.arch_label }}"
+          if [ "$arch" = "both" ] || { [ "$arch" = "910" ] && [ "$label" = "aarch64-910B" ]; } || { [ "$arch" = "950" ] && [ "$label" = "x86_64-950" ]; }; then
+            echo "match=true" >> "$GITHUB_OUTPUT"
+            echo "arch matches ($arch / $label), proceeding"
+          else
+            echo "match=false" >> "$GITHUB_OUTPUT"
+            echo "arch mismatch ($arch / $label), skipping"
+          fi
+
+      - name: Clone repo
+        if: steps.arch.outputs.match == 'true'
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$PWD"
+          REPO_URL="https://github.com/${GITHUB_REPOSITORY}.git"
+          docker run --rm \
+            --network host \
+            -v "$PWD:/workspace" \
+            -w /workspace \
+            "$CI_DOCKER_IMAGE" \
+            bash -c '
+              set -e
+              git config --global --add safe.directory /workspace
+              git config --global http.postBuffer 524288000
+              REPO_URL="https://github.com/'"${GITHUB_REPOSITORY}"'.git"
+              CI_REF="'"$CI_REF"'"
+              for i in 1 2 3; do
+                echo "[clone][docker] attempt $i/3"
+                rm -rf /workspace/.git /workspace/csrc/catlass 2>/dev/null || true
+                git init -q
+                git remote remove origin 2>/dev/null || true
+                git remote add origin "$REPO_URL"
+                if git fetch --depth=50 origin "$CI_REF"; then
+                  rm -rf /workspace/csrc/catlass 2>/dev/null || true
+                  git clean -fdx -e .git
+                  git checkout -q FETCH_HEAD
+                  echo "[clone][docker] success"
+                  chmod -R a+rw /workspace 2>/dev/null || true
+                  exit 0
+                fi
+                echo "[clone][docker] attempt $i/3 failed, retry in 15s..."
+                sleep 15
+              done
+              echo "[clone][docker] all 3 attempts failed"
+              exit 1
+            '
+
+          ls -la ci/run_ci_container.sh
+          git log --oneline -3
+
+      - name: Build + Test
+        if: steps.arch.outputs.match == 'true'
+        run: |
+          set -euo pipefail
+          bash ci/run_ci_container.sh
+
+      - name: Upload test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs-${{ matrix.arch_label }}
+          path: /tmp/ci_test_logs/
+          retention-days: 7
+
+      - name: Kill orphaned CI containers
+        if: always()
+        run: |
+          echo "cleaning up orphaned containers from image: $CI_DOCKER_IMAGE"
+          orphans=$(docker ps -q --filter "ancestor=$CI_DOCKER_IMAGE")
+          if [ -n "$orphans" ]; then
+            echo "killing orphaned containers: $orphans"
+            docker kill $orphans 2>/dev/null || true
+          else
+            echo "no orphaned containers found"
+          fi
