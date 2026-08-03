@@ -142,7 +142,7 @@ def ref_flash_attention(
     lse = torch.squeeze((torch.log(gl) + gm), dim=-1).to(torch.float32)
     return go.to(data_type), lse
 
-test_cases1 = [
+test_cases = [
     # (data_type, batch_size, num_heads, kv_heads, q_seqlen, kv_seqlen, head_size, cache_mode, block_size, is_causal, window_size_left, window_size_right, softcap)
     (torch.bfloat16, 1, 1, 1, 1024, 1024, 128, 1, 128, False, -1, -1, 0.0),
     (torch.bfloat16, 5, 4, 4, 1024, 1024, 128, 0, 128, True, -1, -1, 0.0),
@@ -263,12 +263,9 @@ test_cases1 = [
     (torch.bfloat16, 1, 3, 1, 128, 2048, 1, 1, 128, False, -1, -1, 0.0),
     (torch.bfloat16, 1, 3, 1, 128, 2048, 1, 0, 128, False, -1, -1, 0.0),
     (torch.bfloat16, 8, 1024, 16, 8, 640, 1, 1, 128, False, -1, -1, 0.0),
+    (torch.float16, 128, 16, 8, 1024, 128, 1, 1, 128, False, 497, 265, 0.0),
 ]
 
-# test_cases = [(torch.float16, 512, 512, 1, 1, 1024, 4, 0, 128, True, 542, 647, 0.0),]
-# test_cases = [(torch.bfloat16, 32, 2, 1, 4096, 128, 2, 1, 128, True, 313, 508, 0.0)]
-test_cases = [(torch.float16, 128, 16, 8, 1024, 128, 1, 1, 128, False, 497, 265, 0.0)]
-#              torch.float16, 128, 16, 8, 1024, 128, 1, 1, 128, False, 497, 265
 @pytest.mark.parametrize("data_type, batch_size, num_heads, kv_heads, q_seqlen, kv_seqlen, head_size, cache_mode, block_size, is_causal, window_size_left, window_size_right, softcap", test_cases)
 def test_fa_custom_ops(data_type, batch_size, num_heads, kv_heads, q_seqlen, kv_seqlen, head_size, cache_mode, block_size, is_causal, window_size_left, window_size_right, softcap):
     q_min_range = -5.0
@@ -397,25 +394,13 @@ def test_fa_custom_ops(data_type, batch_size, num_heads, kv_heads, q_seqlen, kv_
         else:
             output, golden_lse = ref_flash_attention(query_cpu, key_cache_per_batch, value_cache_per_batch, scale, None, data_type, softcap)
         out = output.reshape(q_seqlen, num_heads, head_size)
-        if is_local_golden:
-            preTokens = window_size_left_golden
-            nextTokens = window_size_right_golden
-            preTokensChange = preTokens - kv_seqlen + q_seqlen
-            nextTokensChange = nextTokens + kv_seqlen - q_seqlen
-            nextTokensError = -nextTokensChange if nextTokensChange < 0 else 0
-            preTokensError = (q_seqlen - kv_seqlen - preTokensChange) if q_seqlen > kv_seqlen + preTokensChange else 0
-            actualSeq = q_seqlen
-            actualSeq -= nextTokensError
-            actualSeq -= preTokensError
-            if actualSeq != q_seqlen:
-                if nextTokensError != 0:
-                    actualSeq = q_seqlen - actualSeq
-                    out[ :actualSeq, :, :] = 0
-                    golden_lse[:, :actualSeq] = torch.inf
-                elif preTokensError != 0:
-                    actualSeq = actualSeq
-                    out[actualSeq:, :, :] = 0
-                    golden_lse[:, actualSeq:] = torch.inf
+        if is_local_golden and atten_mask is not None:
+            # Soft mask (-1e4) still yields finite garbage on fully-masked rows;
+            # NPU zeroes them / sets lse=inf. Infinite window (-1) must not go
+            # through the numeric pre/nextTokensError heuristics.
+            fully_masked = atten_mask.all(dim=-1)  # [q_seqlen]
+            out[fully_masked, :, :] = 0
+            golden_lse[:, fully_masked] = torch.inf
         golden_out[i:i+1] = out
         golden_lseL[i:i+1] = golden_lse.reshape(num_heads, q_seqlen)
     rtol = 1e-2
@@ -622,24 +607,10 @@ def test_fa_varlen_ops(data_type, batch_size, num_heads, kv_heads, q_seqlen, kv_
         else:
             output, golden_lse = ref_flash_attention(query_cpu, key_per_batch, value_per_batch, scale, None, data_type, softcap)
         out = output.reshape(q_seqlen , num_heads, head_size)
-        if is_local_golden:
-            preTokens = window_size_left_golden
-            nextTokens = window_size_right_golden
-            preTokensChange = preTokens - kv_seqlen + q_seqlen
-            nextTokensChange = nextTokens + kv_seqlen - q_seqlen
-            nextTokensError = -nextTokensChange if nextTokensChange < 0 else 0
-            preTokensError = (q_seqlen - kv_seqlen - preTokensChange) if q_seqlen > kv_seqlen + preTokensChange else 0
-            actualSeq = q_seqlen
-            actualSeq -= nextTokensError
-            actualSeq -= preTokensError
-            if actualSeq != q_seqlen:
-                if nextTokensError != 0:
-                    actualSeq = q_seqlen - actualSeq
-                    out[ :actualSeq, :, :] = 0
-                    golden_lse[:, :actualSeq] = torch.inf
-                elif preTokensError != 0:
-                    out[actualSeq:, :, :] = 0
-                    golden_lse[:, actualSeq:] = torch.inf
+        if is_local_golden and atten_mask is not None:
+            fully_masked = atten_mask.all(dim=-1)
+            out[fully_masked, :, :] = 0
+            golden_lse[:, fully_masked] = torch.inf
         golden_out[(i - 1) * q_seqlen : i * q_seqlen] = out
         golden_lseL[:, (i - 1) * q_seqlen : i * q_seqlen] = golden_lse.reshape(num_heads, q_seqlen)
     rtol = 1e-2
