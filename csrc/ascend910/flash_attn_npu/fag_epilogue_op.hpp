@@ -687,7 +687,7 @@ public:
             AscendC::Duplicate<float, false>(softcapBuffer, 2 * softcapValue, (uint64_t)0, 1, 1, 8);
             AscendC::PipeBarrier<PIPE_V>();
             AscendC::Div<float, false>(vecClc2Buffer, softcapBuffer, vecClc2Buffer, (uint64_t)0, 
-                    (s1ExtendSubGraph*s2ExtendAlign)/64, {1, 1, 1, 8, 0, 8});
+                    CeilDiv(s1ExtendSubGraph*s2ExtendAlign, 64), {1, 1, 1, 8, 0, 8});
             AscendC::PipeBarrier<PIPE_V>();
             AscendC::Adds(vecClc2Buffer, vecClc2Buffer, -softcapValue, s1ExtendSubGraph * s2ExtendAlign);
             AscendC::PipeBarrier<PIPE_V>();
@@ -1363,7 +1363,7 @@ public:
                 cal_repeat_num, SOFTCAP_UB_OFFSET);
             AscendC::Duplicate<float, false>(softcapBuffer, 2 * softcapValue, (uint64_t)0, 1, 1, 8);
             AscendC::PipeBarrier<PIPE_V>();
-            AscendC::Div<float, false>(vecClc2Buffer, softcapBuffer, vecClc2Buffer, (uint64_t)0, s1Extend*s2ExtendAlign/64, {1, 1, 1, 8, 0, 8});
+            AscendC::Div<float, false>(vecClc2Buffer, softcapBuffer, vecClc2Buffer, (uint64_t)0, CeilDiv(s1Extend*s2ExtendAlign, 64), {1, 1, 1, 8, 0, 8});
             AscendC::PipeBarrier<PIPE_V>();
             AscendC::Adds(vecClc2Buffer, vecClc2Buffer, -softcapValue, s1Extend * s2ExtendAlign);
             AscendC::PipeBarrier<PIPE_V>();
