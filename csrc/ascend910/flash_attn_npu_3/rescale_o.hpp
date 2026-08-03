@@ -140,11 +140,9 @@ public:
                 LSE_OUT_INI,
                 (end - start) * FLOAT_BLOCK_SIZE
             );
-            AscendC::Duplicate(
-                lseUbTensor[start],
-                LSE_OUT_INI,
-                (end - start)
-            );
+            if (start == 0U) {
+                AscendC::Duplicate(lseUbTensor[start], LSE_OUT_INI, (end - start));
+            }
         }
         if (qNThisSubBlock == 0U && delEndRow != qSeqlen && qNSubBlockStartOffset < delEndRow) {
             uint32_t rowStart = qNSubBlockStartOffset;
@@ -565,10 +563,17 @@ public:
                         }
                     } else {
                         if (qNThisSubBlock == 0U) {
-                            // single head: its tokens are contiguous in BNS/NT -> plain lse32 burst.
-                            AscendC::DataCopyPad(
-                                gLse, lseUbTensor,
-                                AscendC::DataCopyExtParams(1, totalRowNum * sizeof(float), 0, 0, 0));
+                            uint32_t qNSubBlockStartOffset = qSBlockIdx * VECTOR_SIZE + inRowOffsetThisSubBlock;
+                            uint32_t qNSubBlockEnbdOffset = totalRowNum + qNSubBlockStartOffset;
+                            if (delStartRow != 0 && qNSubBlockEnbdOffset >= delStartRow && qNSubBlockStartOffset <= delStartRow) {
+                                AscendC::DataCopyPad(
+                                    gLse, tvUbTensor,
+                                    AscendC::DataCopyExtParams(totalRowNum, sizeof(float), 0, 0, 0));
+                            } else {
+                                AscendC::DataCopyPad(
+                                    gLse, lseUbTensor,
+                                    AscendC::DataCopyExtParams(1, totalRowNum * sizeof(float), 0, 0, 0));
+                            }
                         } else {
                             // multi-head: per-token gather (srcStride) + scatter (dstStride).
                             uint32_t lseHeadStrideGm = layoutLse.stride(0);  // S_q, BNS/NT head stride
