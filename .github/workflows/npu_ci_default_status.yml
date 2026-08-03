@@ -4,9 +4,14 @@ name: NPU CI 默认状态
 #   NPU CI / 手动验证  pending  "未执行"
 # 并在 PR 下发机器人评论, 提示可用 /run-npu-ci quick 触发。
 # 真正的 NPU CI 不会由此自动执行。
+#
+# 用 pull_request_target (而非 pull_request): fork PR 也能访问 secrets
+# (NPU_CI_BOT_TOKEN) 并拿到可写的 GITHUB_TOKEN, 从而能写 commit status。
+# 安全性: 本 workflow 只调 GitHub API (写 status + 评论), 不 checkout/执行
+# PR 代码, 用 pull_request_target 是安全的。
 
 on:
-  pull_request:
+  pull_request_target:
     types: [opened, reopened, ready_for_review, synchronize]
 
 permissions:
