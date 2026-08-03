@@ -142,7 +142,7 @@ def ref_flash_attention(
     lse = torch.squeeze((torch.log(gl) + gm), dim=-1).to(torch.float32)
     return go.to(data_type), lse
 
-test_cases = [
+test_cases1 = [
     # (data_type, batch_size, num_heads, kv_heads, q_seqlen, kv_seqlen, head_size, cache_mode, block_size, is_causal, window_size_left, window_size_right, softcap)
     (torch.bfloat16, 1, 1, 1, 1024, 1024, 128, 1, 128, False, -1, -1, 0.0),
     (torch.bfloat16, 5, 4, 4, 1024, 1024, 128, 0, 128, True, -1, -1, 0.0),
@@ -257,6 +257,10 @@ test_cases = [
     (torch.bfloat16, 8, 1024, 16, 8, 640, 1, 1, 128, False, -1, -1, 0.0),
 ]
 
+# test_cases = [(torch.float16, 512, 512, 1, 1, 1024, 4, 0, 128, True, 542, 647, 0.0),]
+# test_cases = [(torch.bfloat16, 32, 2, 1, 4096, 128, 2, 1, 128, True, 313, 508, 0.0)]
+test_cases = [(torch.float16, 128, 16, 8, 1024, 128, 1, 1, 128, False, 497, 265, 0.0)]
+#              torch.float16, 128, 16, 8, 1024, 128, 1, 1, 128, False, 497, 265
 @pytest.mark.parametrize("data_type, batch_size, num_heads, kv_heads, q_seqlen, kv_seqlen, head_size, cache_mode, block_size, is_causal, window_size_left, window_size_right, softcap", test_cases)
 def test_fa_custom_ops(data_type, batch_size, num_heads, kv_heads, q_seqlen, kv_seqlen, head_size, cache_mode, block_size, is_causal, window_size_left, window_size_right, softcap):
     q_min_range = -5.0
@@ -264,7 +268,7 @@ def test_fa_custom_ops(data_type, batch_size, num_heads, kv_heads, q_seqlen, kv_
     kv_min_range = -5.0
     kv_max_range = 5.0
     block_size = 128
-    num_blocks = 64
+    num_blocks = 8192
     query = (q_min_range + (q_max_range - q_min_range) * torch.rand(batch_size, q_seqlen, num_heads, head_size)).to(data_type).npu()
     key_cache = None
     value_cache = None
@@ -305,6 +309,7 @@ def test_fa_custom_ops(data_type, batch_size, num_heads, kv_heads, q_seqlen, kv_
     is_causal_golden = (window_size_left_golden < 0 and window_size_right_golden == 0)
     is_local_golden = (window_size_left_golden >= 0 or window_size_right_golden > 0) and not is_causal_golden
     sparse_mode = 4 if is_local_golden else 0
+    print("==========================================1")
 
     out_out, softmax_lse = flash_attn_with_kvcache(
         query,
@@ -326,6 +331,7 @@ def test_fa_custom_ops(data_type, batch_size, num_heads, kv_heads, q_seqlen, kv_
         num_splits=num_splits,
         return_softmax_lse=True
     )
+    print("==========================================2")
     golden_out = torch.empty((batch_size, q_seqlen, num_heads, head_size), dtype=data_type)
     golden_lseL = torch.empty((batch_size, num_heads, q_seqlen), dtype=torch.float32)
     atten_mask = None

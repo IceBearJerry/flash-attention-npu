@@ -600,6 +600,10 @@ mha_fwd_kvcache(at::Tensor &q,                 // batch_size x seqlen_q x num_he
     auto softmaxLseDevice = static_cast<uint8_t *>(softmaxlse.data_ptr());
     // Forward kernel launches live in fwd_dispatch_{bf16,fp16}.cpp. BSND path
     // (IS_TND=false); flash-decode is handled inside the dispatch.
+    if (is_causal) {
+        printf("\n===============\n max_kv_seqlen:%d, seqlen_q:%d, is_causal:%d \n", max_kv_seqlen, seqlen_q, is_causal);
+        TORCH_CHECK((max_kv_seqlen >= seqlen_q), "FlashAttention not support kv_seqlen < q_seqlen when causal is true");
+    }
     FwdLaunchArgs fwd_args;
     fwd_args.blockDim = launchBlockDim;
     fwd_args.aclStream = aclStream;
