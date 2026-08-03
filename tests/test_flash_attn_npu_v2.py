@@ -171,6 +171,14 @@ test_cases = [
     (torch.bfloat16, 5, 4, 4, 1024, 1024, 128, 0, 128, True, -128, 864, 0.0),
     (torch.bfloat16, 1, 1, 1, 1024, 1024, 128, 1, 128, False, 0, 256, 0.0),
     (torch.float16, 2, 2, 2, 512, 512, 128, 0, 128, False, 64, 128, 0.0),
+    # SWA + large GQA decode: rowLoopNum>1 must not hang (EVENT_ID0 order in online_softmax)
+    (torch.float16, 1, 64, 1, 1, 1024, 128, 0, 128, True, 542, 647, 0.0),
+    (torch.float16, 1, 128, 1, 1, 1024, 128, 0, 128, True, 542, 647, 0.0),
+    (torch.float16, 1, 512, 1, 1, 1024, 128, 0, 128, True, 542, 647, 0.0),
+    (torch.bfloat16, 1, 128, 1, 1, 1024, 128, 0, 128, True, 64, 0, 0.0),
+    # D=4 + causal (SWA hang-repro / causal ADDR_MISALIGN probe)
+    (torch.float16, 1, 512, 1, 1, 1024, 4, 0, 128, True, 542, 647, 0.0),
+    (torch.float16, 1, 512, 1, 1, 1024, 4, 0, 128, True, -1, -1, 0.0),
 
     (torch.bfloat16, 1, 8, 2, 1, 512, 128, 0, 128, True, -1, -1, 0.0),
     (torch.bfloat16, 4, 32, 8, 1, 2048, 128, 0, 128, False, -1, -1, 0.0), # g=4,decode, qNBlockTile=4
@@ -193,7 +201,7 @@ test_cases = [
     (torch.bfloat16, 2, 16, 2, 4, 4096, 128, 1, 128, False, -1, -1, 0.0), # FD multi, g=8,Sq*g=32,nT=4
     (torch.bfloat16, 1, 64, 4, 8, 2048, 128, 1, 128, True, -1, -1, 0.0),# FD multi, g=16, Sq*g=128, nT=4
     (torch.bfloat16, 1, 32, 4, 16, 4096, 128, 1, 128, False, -1, -1, 0.0),# FD multi, g=8,Sq*g=128, nT=4
-    
+
     (torch.bfloat16, 1, 32, 4, 3, 2048, 128, 1, 128, False, -1, -1, 0.0), # FD JSQ4 Sq=3,g=8,nT=4  [非2幂]
     (torch.bfloat16, 2, 16, 2, 5, 4096, 128, 1, 128, True, -1, -1, 0.0),# FD JSQ4 Sq=5,g=8,nT=4  [非2幂]
     (torch.bfloat16, 1, 64, 4, 7, 2048, 128, 1, 128, False, -1, -1, 0.0), # FD JSQ4 Sq=7,g=16, nT=4  [非2幂]
@@ -516,6 +524,11 @@ test_cases = [
     (torch.float16, 2, 1, 1, 512, 512, 128, False, 508, -256, 0.0),
     (torch.bfloat16, 1, 1, 1, 1024, 1024, 128, True, -128, 864, 0.0),
     (torch.bfloat16, 2, 6, 2, 2, 1024, 128, True, 256, 0, 0.0),
+    # SWA + large GQA decode (EVENT_ID0 / rowLoopNum>1 hang regression)
+    (torch.float16, 1, 64, 1, 1, 1024, 128, True, 542, 647, 0.0),
+    (torch.float16, 1, 128, 1, 1, 1024, 128, True, 542, 647, 0.0),
+    (torch.float16, 1, 512, 1, 1, 1024, 128, True, 542, 647, 0.0),
+    (torch.bfloat16, 1, 128, 1, 1, 1024, 128, True, 64, 0, 0.0),
     # Softcap
     (torch.float16, 7, 5, 1, 777, 888, 192, False, -1, -1,  30.0),
     (torch.float16, 7, 5, 1, 1777, 1888, 256, True, -1, -1, 50.0),

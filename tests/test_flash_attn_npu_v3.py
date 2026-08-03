@@ -180,6 +180,15 @@ test_cases = [
     (torch.float16, 2, 1, 1, 512, 512, 128, 128, False, "TND", False, 508, -256, 0.0),
     (torch.bfloat16, 1, 1, 1, 1024, 1024, 128, 128, False, "BSND", False, -128, 1024, 0.0),
     (torch.float16, 2, 2, 2, 512, 512, 128, 128, False, "TND", False, 64, 128, 0.0),
+    # SWA + large GQA decode: rowLoopNum>1 must not hang (EVENT_ID0 order in online_softmax)
+    (torch.float16, 1, 64, 1, 1, 1024, 128, 128, True, "BSND", False, 542, 647, 0.0),
+    (torch.float16, 1, 128, 1, 1, 1024, 128, 128, True, "BSND", False, 542, 647, 0.0),
+    (torch.float16, 1, 512, 1, 1, 1024, 128, 128, True, "BSND", False, 542, 647, 0.0),
+    (torch.bfloat16, 1, 128, 1, 1, 1024, 128, 128, True, "TND", False, 64, 0, 0.0),
+    (torch.float16, 1, 512, 1, 1, 1024, 128, 128, True, "TND", False, 542, 647, 0.0),
+    # D=4 + causal (SWA hang-repro / causal ADDR_MISALIGN probe)
+    (torch.float16, 1, 512, 1, 1, 1024, 4, 128, True, "BSND", False, 542, 647, 0.0),
+    (torch.float16, 1, 512, 1, 1, 1024, 4, 128, True, "BSND", False, -1, -1, 0.0),
 
     (torch.bfloat16, 4, 32, 8, 1, 2048, 128, 128, False, "BSND", False, -1, -1, 0.0), # g=4,decode, qNBlockTile=4
     (torch.bfloat16, 8, 64, 8, 1, 4096, 128, 128, False, "BSND", False, -1, -1, 0.0), # g=8,decode, qNBlockTile=8
@@ -620,6 +629,11 @@ test_cases = [
     (torch.float16, 2, 1, 1, 512, 512, 128, False, 508, -256, 0.0),
     (torch.bfloat16, 1, 1, 1, 1024, 1024, 128, True, -128, 864, 0.0),
     (torch.bfloat16, 2, 6, 2, 2, 1024, 128, True, 256, 0, 0.0),
+    # SWA + large GQA decode (EVENT_ID0 / rowLoopNum>1 hang regression)
+    (torch.float16, 1, 64, 1, 1, 1024, 128, True, 542, 647, 0.0),
+    (torch.float16, 1, 128, 1, 1, 1024, 128, True, 542, 647, 0.0),
+    (torch.float16, 1, 512, 1, 1, 1024, 128, True, 542, 647, 0.0),
+    (torch.bfloat16, 1, 128, 1, 1, 1024, 128, True, 64, 0, 0.0),
     # Softcap
     (torch.float16, 7, 5, 1, 777, 888, 192, False, -1, -1, 30.0),
     (torch.float16, 7, 5, 1, 1777, 1888, 256, True, -1, -1, 50.0),
