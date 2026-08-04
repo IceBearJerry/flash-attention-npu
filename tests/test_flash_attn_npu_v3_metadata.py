@@ -108,6 +108,7 @@ def _ref_out_lse(query_cpu, key_cpu, value_cpu, scale, data_type, is_causal):
         scale,
         _causal_mask(query_cpu.shape[0], key_cpu.shape[0], is_causal),
         data_type,
+        softcap=0.0,
     )
     return output, lse.reshape(query_cpu.shape[1], query_cpu.shape[0])
 

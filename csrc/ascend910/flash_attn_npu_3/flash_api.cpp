@@ -7,10 +7,10 @@
 // mha_fwd_kvcache.cpp (SplitFuse::FAInfer) and fag_kernel.cpp (FAGGeneral) are
 // compiled separately in the autogen dispatch TUs; flash_api.cpp only needs
 // FAInferTilingData (tilingdata.h), the FaiKenel enum (kernel_common.hpp), and
-// the fa_split / fa_metadata host helpers. The OpCommand ("ascendc_fag_general")
-// wrapper moved into bwd_dispatch_common.hpp, so OpCommand.h is not needed here.
+// the fa_split / fa_metadata host helpers.
 #include "tilingdata.h"
 #include "torch_npu/csrc/core/npu/NPUStream.h"
+#include "torch_npu/csrc/framework/OpCommand.h"
 #include "acl/acl.h"
 #include "runtime/rt_ffts.h"
 // kernel_operator.h (AscendC) defines GM_ADDR; catlass/catlass.hpp defines the
@@ -96,7 +96,6 @@ mha_fwd(at::Tensor q,   // (b, s_q, h, d) or (total_q, h, d) if there is cu_seql
         )
 {
     const c10::OptionalDeviceGuard device_guard(device_of(q));
-    auto aclStream = c10_npu::getCurrentNPUStream().stream(false);
     auto hostStart = std::chrono::steady_clock::now();
 
     auto q_dtype = q.dtype();
@@ -460,6 +459,7 @@ mha_fwd(at::Tensor q,   // (b, s_q, h, d) or (total_q, h, d) if there is cu_seql
     // is selected at runtime by is_varlen_q (varlen => TND, else BSND); dtype
     // and paged/causal are resolved inside the dispatch. flashDecodeFlag only
     // affects tiling (fa_split), not a FAInfer template arg.
+    auto aclStream = c10_npu::getCurrentNPUStream().stream(false);
     FwdLaunchArgs fwd_args;
     fwd_args.launchBlockDim = launchBlockDim;
     fwd_args.aclStream = aclStream;
@@ -481,11 +481,15 @@ mha_fwd(at::Tensor q,   // (b, s_q, h, d) or (total_q, h, d) if there is cu_seql
     fwd_args.kvSeqDevice = kvSeqDevice;
     fwd_args.workspaceDevice = workspaceDevice;
     fwd_args.tilingDevice = tilingDevice;
-    if (is_varlen_q) {
-        launch_fwd<true>(fwd_args);
-    } else {
-        launch_fwd<false>(fwd_args);
-    }
+    auto launch_fa_infer = [fwd_args, is_varlen_q]() -> int {
+        if (is_varlen_q) {
+            launch_fwd<true>(fwd_args);
+        } else {
+            launch_fwd<false>(fwd_args);
+        }
+        return 0;
+    };
+    at_npu::native::OpCommand::RunOpApiV2("ascendc_fa_infer", launch_fa_infer);
     return {out, softmaxlse, out_accum, softmax_lse_accum};
 }
 
