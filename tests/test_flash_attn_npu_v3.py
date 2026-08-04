@@ -312,10 +312,10 @@ def test_fa_custom_ops(data_type, batch_size, num_heads, kv_heads, q_seqlen, kv_
     block_size = 128
     max_num_blocks_per_seq = (kv_seqlen + block_size - 1) // block_size
     num_blocks = max(64, max_num_blocks_per_seq * batch_size)
+    gen = torch.Generator().manual_seed(1234)
     if is_varied:
         # Per-batch q in [1, q_seqlen], kv in [q, kv_seqlen] (kv>=q so q>kv never occurs).
         # Seeded for reproducibility; does not perturb the query/key/value RNG streams above.
-        gen = torch.Generator().manual_seed(1234)
         q_sequences = torch.randint(low=1, high=q_seqlen + 1, size=(batch_size,), generator=gen).tolist()
         kv_sequences = [int(torch.randint(low=q, high=kv_seqlen + 1, size=(1,), generator=gen))
                         for q in q_sequences]
@@ -325,15 +325,15 @@ def test_fa_custom_ops(data_type, batch_size, num_heads, kv_heads, q_seqlen, kv_
     t_q_sum = sum(q_sequences)
     t_kv_sum = sum(kv_sequences)
     if layout == "BSND":
-        query = (q_min_range + (q_max_range - q_min_range) * torch.rand(batch_size, q_seqlen, num_heads, head_size)).to(data_type).npu()
+        query = (q_min_range + (q_max_range - q_min_range) * torch.rand(batch_size, q_seqlen, num_heads, head_size, generator=gen)).to(data_type).npu()
     elif layout == "TND":
-        query = (q_min_range + (q_max_range - q_min_range) * torch.rand(t_q_sum, num_heads, head_size)).to(data_type).npu()
+        query = (q_min_range + (q_max_range - q_min_range) * torch.rand(t_q_sum, num_heads, head_size, generator=gen)).to(data_type).npu()
     key_cache = None
     value_cache = None
     block_tables = []
     if cache_mode == 1:
-        key_cache = (kv_min_range + (kv_max_range - kv_min_range) * torch.rand(num_blocks, block_size, kv_heads, head_size)).to(data_type).npu()
-        value_cache = (kv_min_range + (kv_max_range - kv_min_range) * torch.rand(num_blocks, block_size, kv_heads, head_size)).to(data_type).npu()
+        key_cache = (kv_min_range + (kv_max_range - kv_min_range) * torch.rand(num_blocks, block_size, kv_heads, head_size, generator=gen)).to(data_type).npu()
+        value_cache = (kv_min_range + (kv_max_range - kv_min_range) * torch.rand(num_blocks, block_size, kv_heads, head_size, generator=gen)).to(data_type).npu()
         for i in range(batch_size):
             block_table = [
                 max_num_blocks_per_seq * i + j
@@ -343,11 +343,11 @@ def test_fa_custom_ops(data_type, batch_size, num_heads, kv_heads, q_seqlen, kv_
         block_tables = torch.tensor(block_tables, dtype=torch.int32).npu()
     else:
         if layout == "BSND":
-            key_cache = (kv_min_range + (kv_max_range - kv_min_range) * torch.rand(batch_size, kv_seqlen, kv_heads, head_size)).to(data_type).npu()
-            value_cache = (kv_min_range + (kv_max_range - kv_min_range) * torch.rand(batch_size, kv_seqlen, kv_heads, head_size)).to(data_type).npu()
+            key_cache = (kv_min_range + (kv_max_range - kv_min_range) * torch.rand(batch_size, kv_seqlen, kv_heads, head_size, generator=gen)).to(data_type).npu()
+            value_cache = (kv_min_range + (kv_max_range - kv_min_range) * torch.rand(batch_size, kv_seqlen, kv_heads, head_size, generator=gen)).to(data_type).npu()
         else:
-            key_cache = (kv_min_range + (kv_max_range - kv_min_range) * torch.rand(t_kv_sum, kv_heads, head_size)).to(data_type).npu()
-            value_cache = (kv_min_range + (kv_max_range - kv_min_range) * torch.rand(t_kv_sum, kv_heads, head_size)).to(data_type).npu()
+            key_cache = (kv_min_range + (kv_max_range - kv_min_range) * torch.rand(t_kv_sum, kv_heads, head_size, generator=gen)).to(data_type).npu()
+            value_cache = (kv_min_range + (kv_max_range - kv_min_range) * torch.rand(t_kv_sum, kv_heads, head_size, generator=gen)).to(data_type).npu()
         block_tables = None
     if layout == "BSND":
         q_seqlen_list = [q_seqlen] * batch_size
