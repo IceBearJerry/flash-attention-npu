@@ -184,7 +184,7 @@ mha_fwd(at::Tensor q,   // (b, s_q, h, d) or (total_q, h, d) if there is cu_seql
     }
     softmaxlse.fill_(std::numeric_limits<float>::infinity());
 
-    
+
         at::Tensor tiling_cpu_tensor = at::empty({static_cast<int64_t>(sizeof(FAInferTilingData))}, at::device(c10::kCPU).dtype(at::kByte));
         FAInferTilingData* tiling_cpu_ptr = reinterpret_cast<FAInferTilingData*>(tiling_cpu_tensor.data_ptr<uint8_t>());
         std::memset(tiling_cpu_ptr, 0, sizeof(FAInferTilingData));
@@ -212,22 +212,27 @@ mha_fwd(at::Tensor q,   // (b, s_q, h, d) or (total_q, h, d) if there is cu_seql
             max_kv_seqlen = std::max(max_kv_seqlen, seqlens_k_cpu[i]);
         }
         tiling_cpu_ptr->set_maxKvSeqlen(static_cast<uint32_t>(max_kv_seqlen));
-        // causal=true is the same as causal=false when seqlen_q == 1 (decode).
-        if (seqlen_q == 1) {
-            is_causal = false;
-        }
-        const bool causal_flag = is_causal;
         if (max_kv_seqlen > 0 && window_size_left >= max_kv_seqlen - 1) {
             window_size_left = -1;
         }
         if (seqlen_q > 0 && window_size_right >= seqlen_q - 1) {
             window_size_right = -1;
         }
-        if (causal_flag) {
+        if (is_causal) {
             window_size_right = 0;
         }
         is_causal = (window_size_left < 0 && window_size_right == 0);
         is_local = (window_size_left >= 0 || window_size_right >= 0) && !is_causal;
+        // Match bwd (s1Token=INT32_MAX) / Tri Dao: infinite side must not stay
+        // as numeric -1 — kernel treats SPARSE_MODE_INT_MAX as "no bound".
+        if (is_local) {
+            if (window_size_left < 0) {
+                window_size_left = KernelCommon::SPARSE_MODE_INT_MAX;
+            }
+            if (window_size_right < 0) {
+                window_size_right = KernelCommon::SPARSE_MODE_INT_MAX;
+            }
+        }
         if (is_local) {
             tiling_cpu_ptr->set_windowSizeLeft(window_size_left);
             tiling_cpu_ptr->set_windowSizeRight(window_size_right);
