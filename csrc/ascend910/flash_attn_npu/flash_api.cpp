@@ -492,6 +492,16 @@ mha_fwd_kvcache(at::Tensor &q,                 // batch_size x seqlen_q x num_he
     }
     is_causal = (window_size_left < 0 && window_size_right == 0);
     is_local = (window_size_left >= 0 || window_size_right >= 0) && !is_causal;
+    // Match bwd (s1Token=INT32_MAX) / Tri Dao: infinite side must not stay as
+    // numeric -1 — kernel treats SPARSE_MODE_INT_MAX as "no bound".
+    if (is_local) {
+        if (window_size_left < 0) {
+            window_size_left = KernelCommon::SPARSE_MODE_INT_MAX;
+        }
+        if (window_size_right < 0) {
+            window_size_right = KernelCommon::SPARSE_MODE_INT_MAX;
+        }
+    }
 
     uint32_t totalTaskNum = 0;
     uint32_t groupSize = num_heads / num_heads_k;
@@ -686,6 +696,14 @@ mha_fwd(at::Tensor &q,                            // batch_size x seqlen_q x num
     }
     is_causal = (window_size_left < 0 && window_size_right == 0);
     is_local = (window_size_left >= 0 || window_size_right >= 0) && !is_causal;
+    if (is_local) {
+        if (window_size_left < 0) {
+            window_size_left = KernelCommon::SPARSE_MODE_INT_MAX;
+        }
+        if (window_size_right < 0) {
+            window_size_right = KernelCommon::SPARSE_MODE_INT_MAX;
+        }
+    }
 
     // init output tensors
     at::Tensor out = (out_.has_value()) ? out_.value() : torch::empty_like(q);
@@ -929,6 +947,14 @@ mha_varlen_fwd(at::Tensor &q,  // total_q x num_heads x head_size, total_q := \s
     }
     is_causal = (window_size_left < 0 && window_size_right == 0);
     is_local = (window_size_left >= 0 || window_size_right >= 0) && !is_causal;
+    if (is_local) {
+        if (window_size_left < 0) {
+            window_size_left = KernelCommon::SPARSE_MODE_INT_MAX;
+        }
+        if (window_size_right < 0) {
+            window_size_right = KernelCommon::SPARSE_MODE_INT_MAX;
+        }
+    }
 
     tiling_cpu_ptr->set_batch(static_cast<uint32_t>(batch_size));
     tiling_cpu_ptr->set_numHeads(static_cast<uint32_t>(num_heads));

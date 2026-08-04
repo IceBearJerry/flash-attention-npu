@@ -223,6 +223,16 @@ mha_fwd(at::Tensor q,   // (b, s_q, h, d) or (total_q, h, d) if there is cu_seql
         }
         is_causal = (window_size_left < 0 && window_size_right == 0);
         is_local = (window_size_left >= 0 || window_size_right >= 0) && !is_causal;
+        // Match bwd (s1Token=INT32_MAX) / Tri Dao: infinite side must not stay
+        // as numeric -1 — kernel treats SPARSE_MODE_INT_MAX as "no bound".
+        if (is_local) {
+            if (window_size_left < 0) {
+                window_size_left = KernelCommon::SPARSE_MODE_INT_MAX;
+            }
+            if (window_size_right < 0) {
+                window_size_right = KernelCommon::SPARSE_MODE_INT_MAX;
+            }
+        }
         if (is_local) {
             tiling_cpu_ptr->set_windowSizeLeft(window_size_left);
             tiling_cpu_ptr->set_windowSizeRight(window_size_right);

@@ -263,7 +263,8 @@ test_cases = [
     (torch.bfloat16, 1, 3, 1, 128, 2048, 1, 1, 128, False, -1, -1, 0.0),
     (torch.bfloat16, 1, 3, 1, 128, 2048, 1, 0, 128, False, -1, -1, 0.0),
     (torch.bfloat16, 8, 1024, 16, 8, 640, 1, 1, 128, False, -1, -1, 0.0),
-    (torch.float16, 128, 16, 8, 1024, 128, 1, 1, 128, False, 497, 265, 0.0),
+    # Sq>>Sk + left window >= Sk-1 → infinite left; must use INT_MAX not numeric -1
+    (torch.float16, 16, 2, 2, 4096, 2, 128, 0, 128, False, 65, 412, 0.0),
 ]
 
 @pytest.mark.parametrize("data_type, batch_size, num_heads, kv_heads, q_seqlen, kv_seqlen, head_size, cache_mode, block_size, is_causal, window_size_left, window_size_right, softcap", test_cases)
@@ -273,7 +274,7 @@ def test_fa_custom_ops(data_type, batch_size, num_heads, kv_heads, q_seqlen, kv_
     kv_min_range = -5.0
     kv_max_range = 5.0
     block_size = 128
-    num_blocks = 8192
+    num_blocks = 64
     query = (q_min_range + (q_max_range - q_min_range) * torch.rand(batch_size, q_seqlen, num_heads, head_size)).to(data_type).npu()
     key_cache = None
     value_cache = None
@@ -313,6 +314,12 @@ def test_fa_custom_ops(data_type, batch_size, num_heads, kv_heads, q_seqlen, kv_
         window_size_right_golden = 0
     is_causal_golden = (window_size_left_golden < 0 and window_size_right_golden == 0)
     is_local_golden = (window_size_left_golden >= 0 or window_size_right_golden > 0) and not is_causal_golden
+    # Tri Dao / NPU fwd: infinite side (-1) → seqlen_k so mask math has no bound
+    if is_local_golden:
+        if window_size_left_golden < 0:
+            window_size_left_golden = kv_seqlen
+        if window_size_right_golden < 0:
+            window_size_right_golden = kv_seqlen
     sparse_mode = 4 if is_local_golden else 0
     print("==========================================1")
 
@@ -558,6 +565,11 @@ def test_fa_varlen_ops(data_type, batch_size, num_heads, kv_heads, q_seqlen, kv_
         window_size_right_golden = 0
     is_causal_golden = (window_size_left_golden < 0 and window_size_right_golden == 0)
     is_local_golden = (window_size_left_golden >= 0 or window_size_right_golden > 0) and not is_causal_golden
+    if is_local_golden:
+        if window_size_left_golden < 0:
+            window_size_left_golden = kv_seqlen
+        if window_size_right_golden < 0:
+            window_size_right_golden = kv_seqlen
 
     output_npu, softmax_lse, _ = flash_attn_varlen_func(
         query,
