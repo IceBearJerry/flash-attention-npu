@@ -471,9 +471,10 @@ def test_fa_custom_ops(data_type, batch_size, num_heads, kv_heads, q_seqlen, kv_
     new_kv_seqlen_list_cpu = None
     window_size_left_golden = window_size_left
     window_size_right_golden = window_size_right
-    if kv_seqlen > 0 and window_size_left_golden >= kv_seqlen - 1:
+    # Match Tri Dao GPU host: both sides vs kv_seqlen.
+    if kv_seqlen > 0 and window_size_left_golden >= kv_seqlen:
         window_size_left_golden = -1
-    if q_seqlen > 0 and window_size_right_golden >= q_seqlen - 1:
+    if kv_seqlen > 0 and window_size_right_golden >= kv_seqlen:
         window_size_right_golden = -1
     if is_causal:
         window_size_right_golden = 0

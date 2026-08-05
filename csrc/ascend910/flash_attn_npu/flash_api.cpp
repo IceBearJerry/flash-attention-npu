@@ -481,10 +481,11 @@ mha_fwd_kvcache(at::Tensor &q,                 // batch_size x seqlen_q x num_he
     tiling_cpu_ptr->set_maxKvSeqlen(static_cast<uint32_t>(max_kv_seqlen));
 
     bool is_local = false;
-    if (max_kv_seqlen > 0 && window_size_left >= max_kv_seqlen - 1) {
+    // Match GPU: both sides vs seqlen_k (not right vs Sq-1).
+    if (max_kv_seqlen > 0 && window_size_left >= max_kv_seqlen) {
         window_size_left = -1;
     }
-    if (seqlen_q > 0 && window_size_right >= seqlen_q - 1) {
+    if (max_kv_seqlen > 0 && window_size_right >= max_kv_seqlen) {
         window_size_right = -1;
     }
     if (is_causal) {
@@ -492,14 +493,14 @@ mha_fwd_kvcache(at::Tensor &q,                 // batch_size x seqlen_q x num_he
     }
     is_causal = (window_size_left < 0 && window_size_right == 0);
     is_local = (window_size_left >= 0 || window_size_right >= 0) && !is_causal;
-    // Match bwd (s1Token=INT32_MAX) / Tri Dao: infinite side must not stay as
-    // numeric -1 — kernel treats SPARSE_MODE_INT_MAX as "no bound".
+    // Match Tri Dao set_params_fprop: infinite local side → seqlen_k (finite),
+    // not SPARSE_MODE_INT_MAX (fwd MASK_SWA mishandles INT_MAX right bounds).
     if (is_local) {
         if (window_size_left < 0) {
-            window_size_left = KernelCommon::SPARSE_MODE_INT_MAX;
+            window_size_left = max_kv_seqlen;
         }
         if (window_size_right < 0) {
-            window_size_right = KernelCommon::SPARSE_MODE_INT_MAX;
+            window_size_right = max_kv_seqlen;
         }
     }
 
@@ -681,10 +682,11 @@ mha_fwd(at::Tensor &q,                            // batch_size x seqlen_q x num
     TORCH_CHECK(num_heads % num_heads_k == 0, "Number of heads in key/value must divide number of heads in query");
 
     bool is_local = false;
-    if (seqlen_k > 0 && window_size_left >= seqlen_k - 1) {
+    // Match Tri Dao GPU: both sides vs seqlen_k.
+    if (seqlen_k > 0 && window_size_left >= seqlen_k) {
         window_size_left = -1;
     }
-    if (seqlen_q > 0 && window_size_right >= seqlen_q - 1) {
+    if (seqlen_k > 0 && window_size_right >= seqlen_k) {
         window_size_right = -1;
     }
     if (is_causal) {
@@ -694,10 +696,10 @@ mha_fwd(at::Tensor &q,                            // batch_size x seqlen_q x num
     is_local = (window_size_left >= 0 || window_size_right >= 0) && !is_causal;
     if (is_local) {
         if (window_size_left < 0) {
-            window_size_left = KernelCommon::SPARSE_MODE_INT_MAX;
+            window_size_left = seqlen_k;
         }
         if (window_size_right < 0) {
-            window_size_right = KernelCommon::SPARSE_MODE_INT_MAX;
+            window_size_right = seqlen_k;
         }
     }
 
@@ -932,10 +934,11 @@ mha_varlen_fwd(at::Tensor &q,  // total_q x num_heads x head_size, total_q := \s
     TORCH_CHECK(num_heads % num_heads_k == 0, "Number of heads in key/value must divide number of heads in query");
 
     bool is_local = false;
-    if (max_seqlen_k > 0 && window_size_left >= max_seqlen_k - 1) {
+    // Match Tri Dao GPU: both sides vs max_seqlen_k.
+    if (max_seqlen_k > 0 && window_size_left >= max_seqlen_k) {
         window_size_left = -1;
     }
-    if (max_seqlen_q > 0 && window_size_right >= max_seqlen_q - 1) {
+    if (max_seqlen_k > 0 && window_size_right >= max_seqlen_k) {
         window_size_right = -1;
     }
     if (is_causal) {
@@ -945,10 +948,10 @@ mha_varlen_fwd(at::Tensor &q,  // total_q x num_heads x head_size, total_q := \s
     is_local = (window_size_left >= 0 || window_size_right >= 0) && !is_causal;
     if (is_local) {
         if (window_size_left < 0) {
-            window_size_left = KernelCommon::SPARSE_MODE_INT_MAX;
+            window_size_left = max_seqlen_k;
         }
         if (window_size_right < 0) {
-            window_size_right = KernelCommon::SPARSE_MODE_INT_MAX;
+            window_size_right = max_seqlen_k;
         }
     }
 

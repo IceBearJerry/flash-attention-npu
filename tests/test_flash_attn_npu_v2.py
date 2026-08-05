@@ -181,6 +181,9 @@ test_cases = [
     # D=4 + causal (SWA hang-repro / causal ADDR_MISALIGN probe)
     (torch.float16, 1, 512, 1, 1, 1024, 4, 0, 128, True, 542, 647, 0.0),
     (torch.float16, 1, 512, 1, 1, 1024, 4, 0, 128, True, -1, -1, 0.0),
+    # finite left + large right (Sq<<right): GPU keeps right finite vs Sk
+    (torch.float16, 4, 4, 2, 4, 4096, 1, 0, 128, True, 826, 973, 0.0),
+    (torch.float16, 4, 4, 2, 4, 4096, 1, 0, 128, False, 826, 973, 0.0),
 
     (torch.bfloat16, 1, 8, 2, 1, 512, 128, 0, 128, True, -1, -1, 0.0),
     (torch.bfloat16, 4, 32, 8, 1, 2048, 128, 0, 128, False, -1, -1, 0.0), # g=4,decode, qNBlockTile=4
@@ -306,9 +309,10 @@ def test_fa_custom_ops(data_type, batch_size, num_heads, kv_heads, q_seqlen, kv_
     alibi_slopes = None
     window_size_left_golden = window_size_left
     window_size_right_golden = window_size_right
-    if kv_seqlen > 0 and window_size_left_golden >= kv_seqlen - 1:
+    # Match Tri Dao GPU host: both sides vs kv_seqlen.
+    if kv_seqlen > 0 and window_size_left_golden >= kv_seqlen:
         window_size_left_golden = -1
-    if q_seqlen > 0 and window_size_right_golden >= q_seqlen - 1:
+    if kv_seqlen > 0 and window_size_right_golden >= kv_seqlen:
         window_size_right_golden = -1
     if is_causal:
         window_size_right_golden = 0
@@ -555,9 +559,10 @@ def test_fa_varlen_ops(data_type, batch_size, num_heads, kv_heads, q_seqlen, kv_
 
     window_size_left_golden = window_size_left
     window_size_right_golden = window_size_right
-    if kv_seqlen > 0 and window_size_left_golden >= kv_seqlen - 1:
+    # Match Tri Dao GPU host: both sides vs kv_seqlen.
+    if kv_seqlen > 0 and window_size_left_golden >= kv_seqlen:
         window_size_left_golden = -1
-    if q_seqlen > 0 and window_size_right_golden >= q_seqlen - 1:
+    if kv_seqlen > 0 and window_size_right_golden >= kv_seqlen:
         window_size_right_golden = -1
     if is_causal:
         window_size_right_golden = 0
