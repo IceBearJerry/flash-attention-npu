@@ -50,7 +50,7 @@ jobs:
           if [ "$event" = "synchronize" ]; then
             desc="未执行：commit 已变化，请重新触发 /run-npu-ci quick"
           else
-            desc="未执行：请维护者评论 /run-npu-ci quick"
+            desc="未执行：评论 /run-npu-ci quick 触发 (任何人可触发)"
           fi
 
           gh api --method POST "repos/$repo/statuses/$sha" \
@@ -70,9 +70,9 @@ jobs:
           event="${{ github.event.action }}"
 
           if [ "$event" = "synchronize" ]; then
-            hint="commit 已变化, 请仓库 Admin 重新评论 \`/run-npu-ci quick\` 触发 NPU CI。"
+            hint="commit 已变化, 重新评论 \`/run-npu-ci quick\` 触发 NPU CI (任何人可触发)。"
           else
-            hint="请仓库 Admin 在下方评论 \`/run-npu-ci quick\` 或 \`/run-npu-ci full\` 触发 NPU CI。"
+            hint="在下方评论 \`/run-npu-ci quick\` 触发 NPU CI (任何人); \`/run-npu-ci full\` 需 Admin。"
           fi
 
           marker="<!--npu-ci-bot-->"

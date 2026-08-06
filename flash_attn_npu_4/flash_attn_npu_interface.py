@@ -59,7 +59,7 @@ def _window_to_npu(window_size: Optional[int]) -> int:
 
 
 @_torch_custom_op_wrapper(
-    "flash_attn_npu_arch22_v4::_flash_attn_forward",
+    "flash_attn_npu_4::_flash_attn_forward",
     mutates_args=(),
     device_types="npu",
 )
@@ -122,7 +122,7 @@ def _flash_attn_forward(
 
 
 @_torch_custom_op_wrapper(
-    "flash_attn_npu_arch22_v4::_flash_attn_backward_op",
+    "flash_attn_npu_4::_flash_attn_backward_op",
     mutates_args=("dq", "dk", "dv"),
     device_types="npu",
 )
@@ -148,7 +148,7 @@ def _flash_attn_backward_op(
     deterministic: bool,
 ) -> torch.Tensor:
     dout, q, k, v, out = [maybe_contiguous(x) for x in (dout, q, k, v, out)]
-    _dq, _dk, _dv, softmax_d = flash_attn_npu_arch22_v4.bwd(
+    _dq, _dk, _dv, softmax_d = flash_attn_npu_4.bwd(
         dout,
         q,
         k,

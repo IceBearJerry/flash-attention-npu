@@ -1,13 +1,12 @@
 name: NPU CI
 
 # 手动 NPU CI。PR 新建/push 不会自动跑, 由仓库 Admin 通过:
-#   1. Actions 页面 Run workflow (workflow_dispatch, 可选 case_filter 和 workers)
-#   2. PR 评论 /run-npu-ci [quick|full] [case=<name>] [workers=<n>] [arch=910|950|both]
-#      例如: /run-npu-ci quick case=case2_v3_fwd workers=2 arch=910
-#      不带 case= 则按架构默认 (950: v3 fwd; 910B: v2+v3 fwd)
+#   1. Actions 页面 Run workflow (workflow_dispatch, 可选 workers)
+#   2. PR 评论 /run-npu-ci [quick|full] [workers=<n>] [arch=910|950|both]
+#      例如: /run-npu-ci quick workers=2 arch=910
 #      不带 workers= 则默认 2
 #      不带 arch= 则默认 both (950 和 910B 都跑)
-# 只有仓库 Admin 权限账号可触发。
+# quick 任何人可触发; full 仅仓库 Admin。
 #
 # 状态检查名: NPU CI / 手动验证
 # runner 标签: self-hosted, linux, arm64, npu, flash-attention-npu
@@ -27,11 +26,6 @@ on:
         options:
           - quick
           - full
-      case_filter:
-        description: "测试用例名 (留空则按架构默认: 950跑v3 fwd, 910B跑v2+v3 fwd; 可指定如 case2_v3_fwd)"
-        required: false
-        type: string
-        default: ""
       workers:
         description: "case 内并行进程数 (pytest-xdist -n, 默认 2)"
         required: false
@@ -78,7 +72,6 @@ jobs:
       base_ref: ${{ steps.resolve.outputs.base_ref }}
       pr_number: ${{ steps.resolve.outputs.pr_number }}
       ci_mode: ${{ steps.resolve.outputs.ci_mode }}
-      case_filter: ${{ steps.resolve.outputs.case_filter }}
       workers: ${{ steps.resolve.outputs.workers }}
       arch: ${{ steps.resolve.outputs.arch }}
       should_run: ${{ steps.check.outputs.should_run }}
@@ -114,20 +107,14 @@ jobs:
           fi
           echo "ci_mode=$ci_mode" >> "$GITHUB_OUTPUT"
 
-          # 解析 case 和 workers (评论: /run-npu-ci quick case=case2_v3_fwd workers=2)
+          # 解析 workers 和 arch (评论: /run-npu-ci quick workers=2 arch=910)
           # workflow_dispatch 从 inputs 取, issue_comment 从评论 body 解析
-          # case_filter 为空时, run job 用 matrix.default_cases (按架构区分)
           if [ "$EVENT_NAME" = "issue_comment" ]; then
-            case_filter="$(echo "$COMMENT_BODY" | grep -oE 'case=[^ ]+' | head -1 | cut -d= -f2- || true)"
             workers="$(echo "$COMMENT_BODY" | grep -oE 'workers=[0-9]+' | head -1 | cut -d= -f2- || true)"
             arch="$(echo "$COMMENT_BODY" | grep -oE 'arch=(910|950|both)' | head -1 | cut -d= -f2- || true)"
           else
-            case_filter="${{ github.event.inputs.case_filter }}"
             workers="${{ github.event.inputs.workers }}"
             arch="${{ github.event.inputs.arch }}"
-          fi
-          if [ -n "$case_filter" ]; then
-            echo "case_filter=$case_filter" >> "$GITHUB_OUTPUT"
           fi
           echo "workers=${workers:-2}" >> "$GITHUB_OUTPUT"
           echo "arch=${arch:-both}" >> "$GITHUB_OUTPUT"
@@ -139,7 +126,7 @@ jobs:
           echo "base_ref=$base_ref" >> "$GITHUB_OUTPUT"
           echo "resolved pr=$pr_number sha=$sha base=$base_ref mode=$ci_mode actor=$actor"
 
-      - name: Check admin permission
+      - name: Check permission
         id: perm
         env:
           GH_TOKEN: ${{ secrets.NPU_CI_BOT_TOKEN || secrets.GITHUB_TOKEN }}
@@ -152,10 +139,12 @@ jobs:
           else
             actor="${{ github.actor }}"
           fi
-          perm="$(gh api "repos/$repo/collaborators/$actor/permission" --jq '.permission')"
-          echo "actor=$actor permission=$perm"
-          if [ "$perm" != "admin" ]; then
-            echo "::error::Only repo admins can trigger NPU CI ($actor has '$perm')"
+          perm="$(gh api "repos/$repo/collaborators/$actor/permission" --jq '.permission' 2>/dev/null || echo none)"
+          ci_mode="${{ steps.resolve.outputs.ci_mode }}"
+          echo "actor=$actor permission=$perm ci_mode=$ci_mode"
+          # quick: 任何人可触发; full: 仅 Admin (full 跑全量含 bwd, 资源消耗大)
+          if [ "$ci_mode" = "full" ] && [ "$perm" != "admin" ]; then
+            echo "::error::Only repo admins can trigger /run-npu-ci full ($actor has '$perm'). quick 任何人可触发。"
             exit 1
           fi
 
@@ -234,13 +223,11 @@ jobs:
           - arch_label: x86_64-950
             runs_on: '["self-hosted", "linux", "x64", "npu", "flash-attention-npu"]'
             docker_image: fa-npu-ci:950-cann9.1-torch2.9
-            default_cases: case2_v3_fwd
             require_healthy: "true"
             max_tasks: "6"
           - arch_label: aarch64-910B
             runs_on: '["self-hosted", "linux", "arm64", "npu", "flash-attention-npu"]'
             docker_image: fa-npu-ci:910b-cann9.1-torch2.9
-            default_cases: case1_current_default,case2_v3_fwd
             require_healthy: "false"
             max_tasks: "4"
     runs-on: ${{ fromJSON(matrix.runs_on) }}
@@ -248,7 +235,6 @@ jobs:
     env:
       CI_MODE: ${{ needs.prepare.outputs.ci_mode }}
       CI_RUN_EXAMPLE_ST: "true"
-      CI_EXAMPLE_CASE_FILTER: ${{ needs.prepare.outputs.case_filter || matrix.default_cases }}
       CI_TEST_WORKERS: ${{ needs.prepare.outputs.workers }}
       CI_DOCKER_IMAGE: ${{ matrix.docker_image }}
       CI_REQUIRE_HEALTHY_NPU: ${{ matrix.require_healthy }}
