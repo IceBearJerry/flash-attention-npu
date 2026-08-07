@@ -22,7 +22,7 @@ import torch_npu
 if "Ascend950" in (torch_npu.npu.get_device_name() if torch_npu.npu.device_count() > 0 else ""):
     pytest.skip("flash_attn_varlen_func not on Ascend950", allow_module_level=True)
 
-from flash_attn_npu_v4 import flash_attn_varlen_func
+from flash_attn_npu_4 import flash_attn_varlen_func
 
 TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
 if TESTS_DIR not in sys.path:

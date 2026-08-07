@@ -12,7 +12,6 @@
 # 环境变量:
 #   CI_MODE                  (默认 quick)  quick|full
 #   CI_RUN_EXAMPLE_ST        (默认 true)   是否跑 Example ST
-#   CI_EXAMPLE_CASE_FILTER   (默认空)      只跑指定 case name (逗号分隔)
 #   CI_CONTAINER_DEVICE      (默认 0)      容器内逻辑设备号
 #   CI_DOCKER_PRIVILEGED     (默认 true)   是否带 --privileged
 #   CI_DOCKER_IMAGE          (默认 fa-npu-ci:910b-cann9.1-torch2.9)
@@ -28,7 +27,6 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 CI_MODE="${CI_MODE:-quick}"
 CI_RUN_EXAMPLE_ST="${CI_RUN_EXAMPLE_ST:-true}"
-CI_EXAMPLE_CASE_FILTER="${CI_EXAMPLE_CASE_FILTER:-}"
 CI_CONTAINER_DEVICE="${CI_CONTAINER_DEVICE:-0}"
 CI_DOCKER_PRIVILEGED="${CI_DOCKER_PRIVILEGED:-true}"
 CI_DOCKER_IMAGE="${CI_DOCKER_IMAGE:-fa-npu-ci:910b-cann9.1-torch2.9}"
@@ -126,10 +124,11 @@ run_docker_test() {
     -e ASCEND_RT_VISIBLE_DEVICES="$device_id" \
     -e CI_MODE="$CI_MODE" \
     -e CI_RUN_EXAMPLE_ST="$CI_RUN_EXAMPLE_ST" \
-    -e CI_EXAMPLE_CASE_FILTER="${CI_EXAMPLE_CASE_FILTER:-}" \
     -e CI_TEST_WORKERS="${CI_TEST_WORKERS:-}" \
     -e CI_TEST_DIRECT_FILE="${CI_TEST_DIRECT_FILE:-}" \
     -e CI_TEST_DIRECT_FILTER="${CI_TEST_DIRECT_FILTER:-}" \
+    -e CI_RANDOM_SEED="${CI_RANDOM_SEED:-0}" \
+    -e CI_QUICK_SAMPLE="${CI_QUICK_SAMPLE:-30}" \
     -e CI_TEST_LOG_DIR="/tmp/ci_test_logs" \
     -e CI_CONTAINER_DEVICE="$CI_CONTAINER_DEVICE" \
     -e FLASH_ATTN_BUILD_VERSION="${FLASH_ATTN_BUILD_VERSION:-all}" \
