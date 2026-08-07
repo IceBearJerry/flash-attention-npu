@@ -760,14 +760,18 @@ namespace SplitFuse {
                             }
                         }
                     } else if constexpr (MASK_TYPE == FaiKenel::MaskType::MASK_SWA) {
+                        // StartLen can be negative when Sq>>Sk; compare in int32 so
+                        // it is not promoted against uint32 kvSStartIdx/kvSEndIdx.
+                        int32_t kvStartI = static_cast<int32_t>(kvSStartIdx);
+                        int32_t kvEndI = static_cast<int32_t>(kvSEndIdx);
                         bool doTriUPreMask = (maskType != 2 || notPreMask) ? false :
-                            (windowSizeLeftStartLen >= kvSStartIdx && windowSizeLeftStartLen < kvSEndIdx) ||
-                            (windowSizeLeftEndLen > kvSStartIdx && windowSizeLeftEndLen <= kvSEndIdx) ||
-                            (windowSizeLeftStartLen <= kvSStartIdx && windowSizeLeftEndLen >= kvSEndIdx);
+                            (windowSizeLeftStartLen >= kvStartI && windowSizeLeftStartLen < kvEndI) ||
+                            (windowSizeLeftEndLen > kvStartI && windowSizeLeftEndLen <= kvEndI) ||
+                            (windowSizeLeftStartLen <= kvStartI && windowSizeLeftEndLen >= kvEndI);
                         bool doTriUNextMask = (maskType != 2 || notNextMask) ? false :
-                            (windowSizeRightStartLen >= kvSStartIdx && windowSizeRightStartLen < kvSEndIdx) ||
-                            (windowSizeRightEndLen > kvSStartIdx && windowSizeRightEndLen <= kvSEndIdx) ||
-                            (windowSizeRightStartLen <= kvSStartIdx && windowSizeRightEndLen >= kvSEndIdx);
+                            (windowSizeRightStartLen >= kvStartI && windowSizeRightStartLen < kvEndI) ||
+                            (windowSizeRightEndLen > kvStartI && windowSizeRightEndLen <= kvEndI) ||
+                            (windowSizeRightStartLen <= kvStartI && windowSizeRightEndLen >= kvEndI);
                         bool doTriUMask = (doTriUPreMask || doTriUNextMask);
                         if (doTriUMask) {
                             startsWithMaskTile = true;

@@ -298,10 +298,11 @@ mha_fwd(at::Tensor q,   // (b, s_q, h, d) or (total_q, h, d) if there is cu_seql
             max_kv_seqlen = std::max(max_kv_seqlen, seqlens_k_cpu[i]);
         }
         tiling_cpu_ptr->set_maxKvSeqlen(static_cast<uint32_t>(max_kv_seqlen));
-        if (max_kv_seqlen > 0 && window_size_left >= max_kv_seqlen - 1) {
+        // Match GPU: both sides vs seqlen_k (not right vs Sq-1).
+        if (max_kv_seqlen > 0 && window_size_left >= max_kv_seqlen) {
             window_size_left = -1;
         }
-        if (seqlen_q > 0 && window_size_right >= seqlen_q - 1) {
+        if (max_kv_seqlen > 0 && window_size_right >= max_kv_seqlen) {
             window_size_right = -1;
         }
         if (is_causal) {
@@ -309,6 +310,15 @@ mha_fwd(at::Tensor q,   // (b, s_q, h, d) or (total_q, h, d) if there is cu_seql
         }
         is_causal = (window_size_left < 0 && window_size_right == 0);
         is_local = (window_size_left >= 0 || window_size_right >= 0) && !is_causal;
+        // Match Tri Dao set_params_fprop: infinite local side → seqlen_k.
+        if (is_local) {
+            if (window_size_left < 0) {
+                window_size_left = max_kv_seqlen;
+            }
+            if (window_size_right < 0) {
+                window_size_right = max_kv_seqlen;
+            }
+        }
         if (is_local) {
             tiling_cpu_ptr->set_windowSizeLeft(window_size_left);
             tiling_cpu_ptr->set_windowSizeRight(window_size_right);

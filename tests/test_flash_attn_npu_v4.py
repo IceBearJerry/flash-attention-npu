@@ -152,7 +152,7 @@ def ref_flash_attention(
 def build_cann_causal_mask():
     """Fixed [2048, 2048] causal mask for npu_fused_infer_attention_score."""
     return torch.triu(torch.ones(2048, 2048), diagonal=1).bool().npu()
-    
+
 def softmax_numpy(sim, sink_matrix):
     if isinstance(sim, torch.Tensor):
         sim = sim.detach().cpu().numpy()
@@ -167,10 +167,10 @@ def softmax_numpy(sim, sink_matrix):
         # 更新含sink的rowmax
         # row_max = np.maximum(row_max, sink_matrix)
         row_max[valid_row_mask] = np.maximum(
-            row_max[valid_row_mask], 
+            row_max[valid_row_mask],
             sink_matrix[valid_row_mask]
         )
-    
+
     sim_sub = sim - row_max
     sim_sub_high = sim.astype(np.float64) - row_max.astype(np.float64)
 
@@ -198,7 +198,7 @@ def ref_masked_attention(
             scale: float,
             mask,    # (q_seqlen, k_seqlen)
             sink_matrix,
-):  
+):
     query = query.permute(1, 0, 2)
     key = key.permute(1, 2, 0)
     value = value.permute(1, 0, 2)
@@ -212,11 +212,11 @@ def ref_masked_attention(
     lse_high = lse_high.astype(np.float64)
     p = torch.from_numpy(p_high).to(query.dtype)
     p_high = torch.from_numpy(p_high).to(torch.float32)
-    
+
     out_high = group_matmul(query.shape[0], key.shape[0], p_high, value, 1)
     out_high = out_high.permute(1, 0, 2)
     return out_high, lse_high
-    
+
 test_cases = [
     # (data_type, batch_size, num_heads, kv_heads, q_seqlen, kv_seqlen, head_size, cache_mode,
     #  block_size, is_causal, layout, is_varied, window_size_left, window_size_right)
@@ -252,6 +252,14 @@ test_cases = [
     (torch.float16, 2, 1, 1, 512, 512, 128, 1, 128, False, "TND", False, 508, -256),
     (torch.bfloat16, 1, 1, 1, 1024, 1024, 128, 1, 128, False, "BSND", False, -128, 1024),
     (torch.float16, 2, 2, 2, 512, 512, 128, 0, 128, False, "TND", False, 64, 128),
+    # SWA + large GQA decode: rowLoopNum>1 must not hang (EVENT_ID0 order in online_softmax)
+    (torch.float16, 1, 64, 1, 1, 1024, 128, 0, 128, True, "BSND", False, 542, 647),
+    (torch.float16, 1, 128, 1, 1, 1024, 128, 0, 128, True, "BSND", False, 542, 647),
+    (torch.float16, 1, 512, 1, 1, 1024, 128, 0, 128, True, "BSND", False, 542, 647),
+    (torch.bfloat16, 1, 128, 1, 1, 1024, 128, 0, 128, True, "TND", False, 64, 0),
+    (torch.float16, 1, 512, 1, 1, 1024, 128, 0, 128, True, "TND", False, 542, 647),
+    # Sq>>Sk SWA: left window collapses to -1; golden must zero fully-masked q rows via mask
+    (torch.float16, 2, 16, 8, 1024, 128, 128, 0, 128, False, "BSND", False, 497, 265),
 
     # ===== MHA + BF16 + BSND (causal & non-causal) =====
     (torch.bfloat16, 2, 8, 8, 512, 512, 128, 0, 128, True, "BSND", False, -1, -1),
@@ -463,14 +471,20 @@ def test_fa_custom_ops(data_type, batch_size, num_heads, kv_heads, q_seqlen, kv_
     new_kv_seqlen_list_cpu = None
     window_size_left_golden = window_size_left
     window_size_right_golden = window_size_right
-    if kv_seqlen > 0 and window_size_left_golden >= kv_seqlen - 1:
+    # Match Tri Dao GPU host: both sides vs kv_seqlen.
+    if kv_seqlen > 0 and window_size_left_golden >= kv_seqlen:
         window_size_left_golden = -1
-    if q_seqlen > 0 and window_size_right_golden >= q_seqlen - 1:
+    if kv_seqlen > 0 and window_size_right_golden >= kv_seqlen:
         window_size_right_golden = -1
     if is_causal:
         window_size_right_golden = 0
     is_causal_golden = (window_size_left_golden < 0 and window_size_right_golden == 0)
     is_local_golden = (window_size_left_golden >= 0 or window_size_right_golden > 0) and not is_causal_golden
+    if is_local_golden:
+        if window_size_left_golden < 0:
+            window_size_left_golden = kv_seqlen
+        if window_size_right_golden < 0:
+            window_size_right_golden = kv_seqlen
     if layout == "TND":
         new_q_seqlen_list_cpu = [0]
         pre_seq_sum = 0
@@ -508,14 +522,17 @@ def test_fa_custom_ops(data_type, batch_size, num_heads, kv_heads, q_seqlen, kv_
     def create_binary_matrix(qSeqlen, kvSeqlen, preToken, nextToken):
         preToken = kvSeqlen - qSeqlen - preToken
         nextToken = kvSeqlen - qSeqlen + nextToken
-        matrix = [[0 for _ in range(kvSeqlen)] for _ in range(qSeqlen)]
-        for i in range(qSeqlen):
-            for j in range(kvSeqlen):
-                is_below_pretoken_line = (-i + j) < preToken
-                is_above_nexttoken_line = (-i + j) > nextToken
-                if is_below_pretoken_line or is_above_nexttoken_line:
-                    matrix[i][j] = 1
-        return torch.tensor(matrix, dtype=torch.bool)
+        i = torch.arange(qSeqlen)[:, None]
+        j = torch.arange(kvSeqlen)[None, :]
+        return ((-i + j) < preToken) | ((-i + j) > nextToken)
+
+    def gather_paged_kv(block_table_row, kv_seqlen_per_batch):
+        # key/value_cache.cpu() once — per-token .cpu() on the full cache is O(Sk^2).
+        kc = key_cache.detach().cpu()
+        vc = value_cache.detach().cpu()
+        bt = block_table_row.cpu()
+        pos = torch.arange(kv_seqlen_per_batch)
+        return kc[bt[pos // block_size], pos % block_size], vc[bt[pos // block_size], pos % block_size]
 
     golden_out_gpu = None
     golden_lseL_gpu = None
@@ -548,20 +565,8 @@ def test_fa_custom_ops(data_type, batch_size, num_heads, kv_heads, q_seqlen, kv_
         if layout == "BSND":
             query_cpu_per_batch = query.detach().cpu()[i]
             if cache_mode == 1:
-                keys = []
-                values = []
-                block_table = block_tables.cpu()[i]
-                for j in range(kv_seqlen_per_batch):
-                    block_number = int(block_table[j // block_size])
-                    block_offset = j % block_size
-                    k = key_cache.detach().cpu()[block_number, block_offset, :, :]
-                    k = k.reshape(kv_heads, head_size)
-                    keys.append(k)
-                    v = value_cache.detach().cpu()[block_number, block_offset, :, :]
-                    v = v.reshape(kv_heads, head_size)
-                    values.append(v)
-                key_cache_per_batch = torch.stack(keys, dim=0)
-                value_cache_per_batch = torch.stack(values, dim=0)
+                key_cache_per_batch, value_cache_per_batch = gather_paged_kv(
+                    block_tables[i], kv_seqlen_per_batch)
             else:
                 key_cache_per_batch = key_cache.detach().cpu()[i]
                 value_cache_per_batch = value_cache.detach().cpu()[i]
@@ -571,20 +576,8 @@ def test_fa_custom_ops(data_type, batch_size, num_heads, kv_heads, q_seqlen, kv_
                 key_cache_per_batch = key_cache.detach().cpu()[new_kv_seqlen_list_cpu[i] : new_kv_seqlen_list_cpu[i + 1]]
                 value_cache_per_batch = value_cache.detach().cpu()[new_kv_seqlen_list_cpu[i] : new_kv_seqlen_list_cpu[i + 1]]
             else:
-                keys = []
-                values = []
-                block_table = block_tables.cpu()[i]
-                for j in range(kv_seqlen_per_batch):
-                    block_number = int(block_table[j // block_size])
-                    block_offset = j % block_size
-                    k = key_cache.detach().cpu()[block_number, block_offset, :, :]
-                    k = k.reshape(kv_heads, head_size)
-                    keys.append(k)
-                    v = value_cache.detach().cpu()[block_number, block_offset, :, :]
-                    v = v.reshape(kv_heads, head_size)
-                    values.append(v)
-                key_cache_per_batch = torch.stack(keys, dim=0)
-                value_cache_per_batch = torch.stack(values, dim=0)
+                key_cache_per_batch, value_cache_per_batch = gather_paged_kv(
+                    block_tables[i], kv_seqlen_per_batch)
         if atten_mask is not None:
             output_gpu, golden_lse_gpu = ref_flash_attention(query_cpu_per_batch, key_cache_per_batch, value_cache_per_batch, scale, atten_mask, data_type, rescale_threshold=4.0)
             output, golden_lse = ref_masked_attention(query_cpu_per_batch, key_cache_per_batch, value_cache_per_batch, scale, atten_mask, None)
@@ -594,30 +587,15 @@ def test_fa_custom_ops(data_type, batch_size, num_heads, kv_heads, q_seqlen, kv_
         out_gpu = output_gpu.reshape(q_seqlen_per_batch, num_heads, head_size)
         out_plain = output.reshape(q_seqlen_per_batch, num_heads, head_size)
         lse_plain = torch.from_numpy(golden_lse)
-        if is_local_golden:
-            preTokens = window_size_left_golden
-            nextTokens = window_size_right_golden
-            preTokensChange = preTokens - kv_seqlen_per_batch + q_seqlen_per_batch
-            nextTokensChange = nextTokens + kv_seqlen_per_batch - q_seqlen_per_batch
-            nextTokensError = -nextTokensChange if nextTokensChange < 0 else 0
-            preTokensError = (
-                q_seqlen_per_batch - kv_seqlen_per_batch - preTokensChange
-            ) if q_seqlen_per_batch > kv_seqlen_per_batch + preTokensChange else 0
-            actualSeq = q_seqlen_per_batch
-            actualSeq -= nextTokensError
-            actualSeq -= preTokensError
-            if actualSeq != q_seqlen_per_batch:
-                if nextTokensError != 0:
-                    actualSeq = q_seqlen_per_batch - actualSeq
-                    out_gpu[ :actualSeq, :, :] = 0
-                    golden_lse_gpu[:, :actualSeq] = torch.inf
-                    out_plain[ :actualSeq, :, :] = 0
-                    lse_plain[:, :actualSeq] = torch.inf
-                elif preTokensError != 0:
-                    out_gpu[actualSeq:, :, :] = 0
-                    golden_lse_gpu[:, actualSeq:] = torch.inf
-                    out_plain[actualSeq:, :, :] = 0
-                    lse_plain[:, actualSeq:] = torch.inf
+        if is_local_golden and atten_mask is not None:
+            # Soft mask still yields finite garbage on fully-masked rows;
+            # NPU zeroes them / sets lse=inf. Infinite window (-1) must not go
+            # through the numeric pre/nextTokensError heuristics.
+            fully_masked = atten_mask.all(dim=-1)
+            out_gpu[fully_masked, :, :] = 0
+            golden_lse_gpu[:, fully_masked] = torch.inf
+            out_plain[fully_masked, :, :] = 0
+            lse_plain[:, fully_masked] = torch.inf
         if layout == "BSND":
             golden_out_gpu[i:i+1] = out_gpu
             golden_lseL_gpu[i:i+1] = golden_lse_gpu.reshape(1, num_heads, q_seqlen_per_batch)
