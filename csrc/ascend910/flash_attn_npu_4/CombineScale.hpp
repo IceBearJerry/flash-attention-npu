@@ -35,13 +35,13 @@ public:
     static constexpr uint32_t UB_UINT8_LINE_SIZE = 32768; // 1 * 64 * 128 * 4
     static constexpr uint32_t FLOAT_PER_BLOCK = 8;
 
-    __aicore__ inline 
+    __aicore__ inline
     CombineScale() {}
 
-    __aicore__ inline 
+    __aicore__ inline
     ~CombineScale() {}
 
-    __aicore__ inline 
+    __aicore__ inline
     void init(Arch::Resource<ArchTag> &resource) {
         constexpr uint32_t LL_UB_OFFSET = 0;
         constexpr uint32_t LM_UB_OFFSET = 1 * STAGE2_UB_UINT8_BLOCK_SIZE;
@@ -120,11 +120,11 @@ public:
             uint32_t baseGmOffset = prevQSeqlenSum * qHeads * headSizeV + qStartIndx * qHeads * headSizeV + headStartIndx * headSizeV;
             uint32_t gmOScalar = 0;
             if (q_len == 1) {
-                gmOScalar = vectorsubBlockID == 0 ? baseGmOffset 
+                gmOScalar = vectorsubBlockID == 0 ? baseGmOffset
                                                 : baseGmOffset + sum_former * headSizeV;
             } else {
                 uint32_t q_half = q_len / 2;
-                gmOScalar = vectorsubBlockID == 0 ? baseGmOffset 
+                gmOScalar = vectorsubBlockID == 0 ? baseGmOffset
                                                 : baseGmOffset + q_half * qHeads * headSizeV;
             }
 
@@ -150,10 +150,10 @@ public:
 
             AscendC::SetFlag<AscendC::HardEvent::V_MTE2>(EVENT_ID2);
             AscendC::WaitFlag<AscendC::HardEvent::V_MTE2>(EVENT_ID2);
-            
+
             // Copy LSE from GM to UB
             uint32_t srcStride = vectorsubBlockID == 0 ? sum - sum_former : sum_former;
-            AscendC::DataCopyPad(llUbTensor, lGmTensor[addrLOffset], 
+            AscendC::DataCopyPad(llUbTensor, lGmTensor[addrLOffset],
                                 AscendC::DataCopyExtParams(splitNum, lseBlock * sizeof(float), srcStride * sizeof(float), 0, 0),
                                 AscendC::DataCopyPadExtParams<float>(false, 0, lseBlockAlign - lseBlock, 0));
 
@@ -215,20 +215,20 @@ public:
                 uint32_t gmLseBase = batchBase + headBase * headStride + qPos;
                 uint32_t lseDstStride = (headStride - 1) * sizeof(float);
 
+                // q_len==1 DataCopyPad needs Brcb'd 32B-block source (same as v3).
+                AscendC::Brcb(loFloatUbTensor.ReinterpretCast<uint32_t>(),
+                              tsUbTensor.ReinterpretCast<uint32_t>(),
+                              (lseBlockAlign + FLOAT_PER_BLOCK - 1) / FLOAT_PER_BLOCK,
+                              AscendC::BrcbRepeatParams(1, 8));
+                AscendC::PipeBarrier<PIPE_V>();
                 if (q_len == 1) {
                     AscendC::SetFlag<AscendC::HardEvent::V_MTE3>(EVENT_ID3);
                     AscendC::WaitFlag<AscendC::HardEvent::V_MTE3>(EVENT_ID3);
 
                     AscendC::DataCopyPad(
-                        oLseGmTensor[gmLseBase], tsUbTensor,
+                        oLseGmTensor[gmLseBase], loFloatUbTensor,
                         AscendC::DataCopyExtParams(lseBlock, sizeof(float), 0, lseDstStride, 0));
                 } else {
-                    AscendC::Brcb(loFloatUbTensor.ReinterpretCast<uint32_t>(),
-                                  tsUbTensor.ReinterpretCast<uint32_t>(),
-                                  (lseBlockAlign + FLOAT_PER_BLOCK - 1) / FLOAT_PER_BLOCK,
-                                  AscendC::BrcbRepeatParams(1, 8));
-                    AscendC::PipeBarrier<PIPE_V>();
-
                     AscendC::SetFlag<AscendC::HardEvent::V_MTE3>(EVENT_ID3);
                     AscendC::WaitFlag<AscendC::HardEvent::V_MTE3>(EVENT_ID3);
 
@@ -380,4 +380,3 @@ private:
 } // namespace Catlass
 
 #endif // CATLASS_EPILOGUE_BLOCK_COMBINE_SCALE_HPP
-

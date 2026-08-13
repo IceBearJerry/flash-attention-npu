@@ -148,6 +148,12 @@ def ref_flash_attention(
 test_cases = [
     # (data_type, batch_size, num_heads, kv_heads, q_seqlen, kv_seqlen, head_size, cache_mode,
     #  block_size, is_causal, layout, is_varied, window_size_left, window_size_right, softcap)
+    (torch.float16, 1, 8, 4, 4, 128, 64, 128, True, "BSND", False, 578, 295, 0.0),
+    (torch.float16, 1, 16, 2, 8, 4096, 2, 128, True, "TND", True, 746, 16, 0.0),
+    (torch.bfloat16, 4, 2, 2, 8, 2048, 16, 128, True, "TND", False, 536, 462, 0.0),
+    (torch.bfloat16, 4, 32, 2, 4, 2048, 2, 128, True, "TND", False, 460, 62, 0.0),
+    (torch.float16, 4, 16, 2, 4, 8192, 1, 128, False, "TND", False, 59, 571, 0.0),
+    (torch.float16, 4, 2, 2, 4, 8192, 4, 128, False, "TND", True, 563, 425, 0.0),
     (torch.bfloat16, 2, 6, 2, 2, 1024, 128, 128, False, "BSND", False, -1, -1, 0.0),
     (torch.bfloat16, 1, 1, 1, 1024, 1024, 128, 128, False, "TND", False, -1, -1, 0.0),
     (torch.bfloat16, 5, 4, 4, 1024, 1024, 128, 128, True, "TND", False, -1, -1, 0.0),
@@ -184,8 +190,13 @@ test_cases = [
     (torch.float16, 1, 64, 1, 1, 1024, 128, 128, True, "BSND", False, 542, 647, 0.0),
     (torch.float16, 1, 128, 1, 1, 1024, 128, 128, True, "BSND", False, 542, 647, 0.0),
     (torch.float16, 1, 512, 1, 1, 1024, 128, 128, True, "BSND", False, 542, 647, 0.0),
-    # TODO: temporarily removed — accuracy fail (num_splits=0/2)
-    # (torch.bfloat16, 1, 128, 1, 1, 1024, 128, 128, True, "TND", False, 64, 0, 0.0),
+    # FD + SWA decode (TND + paged + num_splits=2): narrow left window → early
+    # FD S2 segments have empty split∩window (kvStart>=kvEnd early return; host-inited
+    # partials 0/-inf must combine correctly). Needs isShortSeq/isLongSeq (B*Hk small, Sk>=1024).
+    (torch.bfloat16, 1, 128, 1, 1, 1024, 128, 128, True, "TND", False, 64, 0, 0.0),
+    (torch.bfloat16, 1, 32, 4, 1, 4096, 128, 128, True, "TND", False, 256, 0, 0.0),
+    (torch.float16, 1, 16, 2, 1, 4096, 128, 128, True, "TND", False, 128, 0, 0.0),
+    (torch.bfloat16, 1, 32, 4, 1, 8192, 128, 128, False, "TND", False, 512, 0, 0.0),
     (torch.float16, 1, 512, 1, 1, 1024, 128, 128, True, "TND", False, 542, 647, 0.0),
     # D=4 + causal (SWA hang-repro / causal ADDR_MISALIGN probe)
     (torch.float16, 1, 512, 1, 1, 1024, 4, 128, True, "BSND", False, 542, 647, 0.0),

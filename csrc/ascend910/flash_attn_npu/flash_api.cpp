@@ -565,6 +565,30 @@ mha_fwd_kvcache(at::Tensor &q,                 // batch_size x seqlen_q x num_he
         + UpdateSize + splitLseTotalSize + splitOTotalSize);
 
     at::Tensor workspace_tensor = at::empty({workSpaceSize}, at::device(at::kPrivateUse1).dtype(at::kByte));
+    // Empty FD splits never write partials; init like FA GPU (O=0, LSE=-inf).
+    if (flashDecodeFlag && (splitLseTotalSize > 0 || splitOTotalSize > 0)) {
+        auto float_opts = workspace_tensor.options().dtype(at::kFloat);
+        if (splitLseTotalSize > 0) {
+            TORCH_CHECK(splitLseTotalSize % sizeof(float) == 0,
+                        "splitLseTotalSize must be a multiple of sizeof(float)");
+            at::Tensor lse_init = at::full(
+                {static_cast<int64_t>(splitLseTotalSize / sizeof(float))},
+                -std::numeric_limits<float>::infinity(), float_opts);
+            workspace_tensor.narrow(/*dim=*/0, /*start=*/0,
+                static_cast<int64_t>(splitLseTotalSize))
+                .copy_(lse_init.view(at::kByte));
+        }
+        if (splitOTotalSize > 0) {
+            TORCH_CHECK(splitOTotalSize % sizeof(float) == 0,
+                        "splitOTotalSize must be a multiple of sizeof(float)");
+            at::Tensor o_init = at::zeros(
+                {static_cast<int64_t>(splitOTotalSize / sizeof(float))}, float_opts);
+            workspace_tensor.narrow(/*dim=*/0,
+                static_cast<int64_t>(splitLseTotalSize),
+                static_cast<int64_t>(splitOTotalSize))
+                .copy_(o_init.view(at::kByte));
+        }
+    }
     // LSE output is head-major BNS: {batch, num_heads, seqlen_q} (matches v3).
     at::Tensor softmaxlse = at::empty({batch_size, num_heads, seqlen_q}, at::device(at::kPrivateUse1).dtype(at::kFloat));
     softmaxlse.fill_(std::numeric_limits<float>::infinity());

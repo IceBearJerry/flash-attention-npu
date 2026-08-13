@@ -258,6 +258,12 @@ test_cases = [
     (torch.float16, 1, 512, 1, 1, 1024, 128, 0, 128, True, "BSND", False, 542, 647),
     (torch.bfloat16, 1, 128, 1, 1, 1024, 128, 0, 128, True, "TND", False, 64, 0),
     (torch.float16, 1, 512, 1, 1, 1024, 128, 0, 128, True, "TND", False, 542, 647),
+    # FD + SWA decode empty split∩window (needs cache_mode=1 + TND + num_splits>1).
+    # Narrow left window → early FD S2 segs return; CombineScale uses host-inited 0/-inf.
+    (torch.bfloat16, 1, 128, 1, 1, 1024, 128, 1, 128, True, "TND", False, 64, 0),
+    (torch.bfloat16, 1, 32, 4, 1, 4096, 128, 1, 128, True, "TND", False, 256, 0),
+    (torch.float16, 1, 16, 2, 1, 4096, 128, 1, 128, True, "TND", False, 128, 0),
+    (torch.bfloat16, 1, 32, 4, 1, 8192, 128, 1, 128, False, "TND", False, 512, 0),
     # Sq>>Sk SWA: left window collapses to -1; golden must zero fully-masked q rows via mask
     (torch.float16, 2, 16, 8, 1024, 128, 128, 0, 128, False, "BSND", False, 497, 265),
 

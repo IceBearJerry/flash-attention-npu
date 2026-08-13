@@ -601,11 +601,16 @@ namespace SplitFuse {
                 kvSLoopNumTotal = CeilDiv(kvSeqlen, MAX_KV_STACK_LEN);
             }
 
-            uint32_t kvEnd = kvSLoopNumTotal;
+            // Match FA GPU split-KV: n_block_min/max = split ∩ window (do not overwrite SWA).
+            uint32_t winKvStart = kvStart;
+            uint32_t winKvEnd = kvSLoopNumTotal;
+            uint32_t kvEnd = winKvEnd;
             if (flashDecodeFlag != 0U) {
-                kvStart = (uint32_t)stS2IdxNow;
-                kvEnd = (enS2IdxNow == static_cast<int32_t>(curKSBlockNum)) ?
-                    kvSLoopNumTotal : (uint32_t)enS2IdxNow;
+                uint32_t fdStart = static_cast<uint32_t>(stS2IdxNow);
+                uint32_t fdEnd = (enS2IdxNow == static_cast<int32_t>(curKSBlockNum)) ?
+                    winKvEnd : static_cast<uint32_t>(enS2IdxNow);
+                kvStart = AscendC::Std::max(fdStart, winKvStart);
+                kvEnd = AscendC::Std::min(fdEnd, winKvEnd);
             }
 
             int32_t stackSeqCount = 0;
@@ -614,16 +619,18 @@ namespace SplitFuse {
             uint32_t stackSeqTile = MAX_KV_STACK_LEN;
             uint32_t stackSeqTilePad = MAX_KV_STACK_LEN;
 
+            // Empty after split\cap window (GPU early exit). Split partials host-inited to 0/-inf.
+            if (kvStart >= kvEnd) {
 #ifdef __DAV_C220_VEC__
-            if constexpr (MASK_TYPE == FaiKenel::MaskType::MASK_SWA) {
-                if (kvSLoopNumTotal <= 0 || kvStart >= kvSLoopNumTotal) {
+                if (!isSplitKV) {
                     LayoutO layoutOInit(qSeqlen, embed * qHeads);
                     LayoutLse layoutLseInit(totalQTokens, qHeads);
                     EpilogueInitOut epilogueInitOut(resource);
                     epilogueInitOut(gO[gmOffsetO], gLse[gmOffsetLse], layoutOInit, layoutLseInit, qSBlockSize, qNBlockSize);
                 }
-            }
 #endif
+                return;
+            }
 #ifdef __DAV_C220_CUBE__
             LayoutQ layoutQTemp(rowNum, embed);
             LayoutK layoutKTemp(strideK, stackSeqTile);
@@ -796,7 +803,8 @@ namespace SplitFuse {
                                     windowSizeLeftStartLen,
                                     windowSizeLeftEndLen,
                                     windowSizeRightStartLen,
-                                    windowSizeRightEndLen);
+                                    windowSizeRightEndLen,
+                                    (flashDecodeFlag != 0U) ? isSplitKV : false);
                         } else {
                             bool isLastNoMaskStackTile = (windowSizeRightStartLen >= kvSeqlen) || (windowSizeRightStartLen < 0);
                             uint32_t kvSeqlenLimit = isLastNoMaskStackTile ? kvSeqlen : windowSizeRightStartLen;
@@ -814,7 +822,7 @@ namespace SplitFuse {
                                 qSBlockSize,
                                 qNBlockSize,
                                 curStackTileMod,
-                                false,
+                                (flashDecodeFlag != 0U) ? isSplitKV : false,
                                 startsWithMaskTile,
                                 startsWithMaskThenNomaskFlag);
                             startsWithMaskTile = false;
